@@ -29,6 +29,7 @@ export interface RecommendationRequest {
 export interface UnifiedRecommendationResult {
   success: boolean;
   recommendations: MovieCardProps[];
+  isColdStart?: boolean;
   error?: string;
 }
 
@@ -37,6 +38,22 @@ const FASTAPI_URL = (
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   "http://127.0.0.1:8000"
 ).replace(/\/+$/, "");
+
+export async function checkBackendHealth(): Promise<{ online: boolean; isColdStart: boolean }> {
+  try {
+    const res = await fetch(`${FASTAPI_URL}/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(4000),
+      cache: "no-store",
+    });
+    if (res.ok) {
+      return { online: true, isColdStart: false };
+    }
+    return { online: false, isColdStart: true };
+  } catch {
+    return { online: false, isColdStart: true };
+  }
+}
 
 export async function fetchMovieLensId(
   title: string,
@@ -191,10 +208,14 @@ export async function getUnifiedRecommendations(payload: {
 
     if (!res.ok) {
       console.warn(`[Recommendations Action] Backend returned HTTP ${res.status}: ${res.statusText}`);
+      const isCold = res.status === 502 || res.status === 503 || res.status === 504 || res.status === 500;
       return {
         success: false,
+        isColdStart: isCold,
         recommendations: [],
-        error: "The recommendation engine is currently warming up. Please click 'Try Again' in a moment.",
+        error: isCold
+          ? "Recommendation engine is starting..."
+          : `Recommendation service error (HTTP ${res.status})`,
       };
     }
 
@@ -202,8 +223,9 @@ export async function getUnifiedRecommendations(payload: {
     if (!data.success || !Array.isArray(data.recommendations)) {
       return {
         success: false,
+        isColdStart: false,
         recommendations: [],
-        error: data.error || "The recommendation engine is temporarily unavailable. Please try again.",
+        error: data.error || "The recommendation engine is temporarily unavailable.",
       };
     }
 
@@ -228,11 +250,12 @@ export async function getUnifiedRecommendations(payload: {
       recommendations: validRecommendations,
     };
   } catch (error: any) {
-    console.error("[Recommendations Action] Error contacting recommendation backend:", error);
+    console.warn("[Recommendations Action] Network/timeout contacting backend:", error?.message || error);
     return {
       success: false,
+      isColdStart: true,
       recommendations: [],
-      error: "The recommendation engine is currently warming up. Please click 'Try Again' in a moment.",
+      error: "Recommendation engine is starting...",
     };
   }
 }

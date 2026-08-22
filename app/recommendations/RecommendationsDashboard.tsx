@@ -10,6 +10,7 @@ type RecommendationStatus =
   | "loading-preferences"
   | "ready-no-preferences"
   | "loading-recommendations"
+  | "waking-backend"
   | "success"
   | "error";
 
@@ -49,12 +50,12 @@ export default function RecommendationsDashboard() {
       return;
     }
 
-    // 3. Initiate recommendation request with request identity checking
+    // 3. Initiate recommendation request with monotonic request ID
     const currentRequestId = ++requestIdRef.current;
     setStatus("loading-recommendations");
     setErrorMessage("");
 
-    async function fetchRecommendations() {
+    async function executeRecommendationFlow() {
       try {
         const likedValid = effectiveLikes
           .map((m) => m.movieLensId ?? m.ml_id)
@@ -95,45 +96,86 @@ export default function RecommendationsDashboard() {
         console.log("[FLIXREC] watched media:", watched);
         console.log("[FLIXREC] recommendation request:", unifiedPayload);
 
-        const res = await getUnifiedRecommendations(unifiedPayload);
+        // ATTEMPT 1
+        let res = await getUnifiedRecommendations(unifiedPayload);
 
-        // Discard stale in-flight response
-        if (currentRequestId !== requestIdRef.current) {
-          return;
-        }
+        if (currentRequestId !== requestIdRef.current) return;
 
-        if (res && res.success) {
+        if (res.success) {
           if (Array.isArray(res.recommendations) && res.recommendations.length > 0) {
             setRecommendations(res.recommendations);
             setStatus("success");
+            return;
           } else {
             setRecommendations([]);
             setStatus("ready-no-preferences");
+            return;
           }
-        } else {
-          setErrorMessage(
-            res?.error ||
-              "The recommendation engine is currently starting up. Please click 'Try Again' in a moment."
-          );
-          setStatus("error");
         }
+
+        // Check if error is due to Render cold start (retryable)
+        if (res.isColdStart) {
+          console.log("[FLIXREC] Backend waking up. Initiating bounded retry (Attempt 2 in 3s)...");
+          setStatus("waking-backend");
+
+          // Bounded backoff: wait ~3 seconds before Attempt 2
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          if (currentRequestId !== requestIdRef.current) return;
+
+          res = await getUnifiedRecommendations(unifiedPayload);
+          if (currentRequestId !== requestIdRef.current) return;
+
+          if (res.success) {
+            if (Array.isArray(res.recommendations) && res.recommendations.length > 0) {
+              setRecommendations(res.recommendations);
+              setStatus("success");
+              return;
+            } else {
+              setRecommendations([]);
+              setStatus("ready-no-preferences");
+              return;
+            }
+          }
+
+          if (res.isColdStart) {
+            console.log("[FLIXREC] Backend still warming. Initiating final bounded retry (Attempt 3 in 5s)...");
+            // Bounded backoff: wait ~5 seconds before Attempt 3
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            if (currentRequestId !== requestIdRef.current) return;
+
+            res = await getUnifiedRecommendations(unifiedPayload);
+            if (currentRequestId !== requestIdRef.current) return;
+
+            if (res.success) {
+              if (Array.isArray(res.recommendations) && res.recommendations.length > 0) {
+                setRecommendations(res.recommendations);
+                setStatus("success");
+                return;
+              } else {
+                setRecommendations([]);
+                setStatus("ready-no-preferences");
+                return;
+              }
+            }
+          }
+        }
+
+        // If all 3 bounded retries failed or a non-retryable error occurred:
+        setErrorMessage(
+          res.isColdStart
+            ? "Unable to load recommendations right now. Please try again."
+            : res.error || "Unable to load recommendations right now. Please try again."
+        );
+        setStatus("error");
       } catch (error: any) {
-        // Discard stale error
-        if (currentRequestId !== requestIdRef.current) {
-          return;
-        }
-        console.error("Failed to fetch recommendations:", error);
-        const rawMsg = error?.message || "";
-        const friendlyMsg =
-          rawMsg.includes("441") || rawMsg.includes("Minified React error")
-            ? "Connecting to the recommendation engine. Please click 'Try Again' in a moment."
-            : rawMsg || "Unable to load recommendations. Please try again.";
-        setErrorMessage(friendlyMsg);
+        if (currentRequestId !== requestIdRef.current) return;
+        console.error("[FLIXREC] Unexpected recommendation error:", error);
+        setErrorMessage("Unable to load recommendations right now. Please try again.");
         setStatus("error");
       }
     }
 
-    fetchRecommendations();
+    executeRecommendationFlow();
   }, [liked, disliked, watched, watchlist, preferencesReady, authLoading, retryCount]);
 
   // STATE A: Preferences are still hydrating or auth checking
@@ -146,7 +188,7 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE B: Recommendations in flight
+  // STATE B: Recommendations in flight (fast path)
   if (status === "loading-recommendations") {
     return (
       <div className="flex flex-col justify-center items-center py-24 text-gray-400">
@@ -156,14 +198,30 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE C: Recommendation API failed
+  // STATE C: Render Backend Cold Start (Waking up)
+  if (status === "waking-backend") {
+    return (
+      <div className="flex flex-col justify-center items-center py-24 text-gray-300 max-w-md mx-auto text-center">
+        <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-6"></div>
+        <h3 className="text-xl font-bold text-white mb-2">Recommendation engine is starting...</h3>
+        <p className="text-sm text-gray-400 mb-6">
+          Please wait a few seconds while the AI service connects and prepares your picks.
+        </p>
+        <div className="w-full bg-white/10 rounded-full h-1.5 overflow-hidden">
+          <div className="bg-primary h-full rounded-full animate-pulse w-3/4"></div>
+        </div>
+      </div>
+    );
+  }
+
+  // STATE D: Real Failure after bounded retries
   if (status === "error") {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center bg-[#111] rounded-2xl border border-red-500/20 p-8 max-w-lg mx-auto">
         <AlertCircle className="w-12 h-12 text-red-400 mb-4" />
-        <h3 className="text-xl font-bold text-white mb-2">Unable to load recommendations</h3>
+        <h3 className="text-xl font-bold text-white mb-2">Unable to load recommendations right now</h3>
         <p className="text-sm text-gray-400 mb-6">
-          {errorMessage || "There was an issue contacting the recommendation engine. Please try again."}
+          {errorMessage || "Please check your connection and try again."}
         </p>
         <button
           onClick={() => setRetryCount((c) => c + 1)}
@@ -175,7 +233,7 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE D: Preferences loaded and genuinely empty
+  // STATE E: Preferences loaded and genuinely empty
   if (status === "ready-no-preferences" || recommendations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-gray-500 bg-[#111] rounded-2xl border border-white/5 p-8 text-center">
@@ -188,7 +246,7 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE E: Successful recommendations
+  // STATE F: Successful recommendations
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
