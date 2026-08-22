@@ -2,6 +2,8 @@ import { searchMovies, searchSeries, getWatchmodeImageUrl } from "@/lib/watchmod
 import MovieCard from "@/components/MovieCard";
 import SearchBar from "@/components/SearchBar";
 
+export const dynamic = "force-dynamic";
+
 export default async function SearchPage({
   searchParams,
 }: {

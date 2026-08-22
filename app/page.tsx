@@ -8,6 +8,8 @@ import {
   getWatchmodeImageUrl,
 } from "@/lib/watchmode";
 
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const [trendingMovies, popularMovies, trendingSeries, topRatedMovies] = await Promise.all([
     getTrendingMovies(),

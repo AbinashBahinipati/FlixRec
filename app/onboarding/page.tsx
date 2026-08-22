@@ -1,6 +1,8 @@
 import OnboardingFlow from "./OnboardingFlow";
 import { getPopularMovies, getWatchmodeImageUrl } from "@/lib/watchmode";
 
+export const dynamic = "force-dynamic";
+
 export default async function OnboardingPage() {
   const popularMovies = await getPopularMovies();
 

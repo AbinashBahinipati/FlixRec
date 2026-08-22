@@ -1,6 +1,8 @@
 import { getPopularSeries, getTopRatedSeries, getTrendingSeries, getWatchmodeImageUrl } from "@/lib/watchmode";
 import ContentRow from "@/components/ContentRow";
 
+export const dynamic = "force-dynamic";
+
 export default async function SeriesPage() {
   const [popularSeries, topRatedSeries, trendingSeries] = await Promise.all([
     getPopularSeries(),

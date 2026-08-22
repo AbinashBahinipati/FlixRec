@@ -4,6 +4,8 @@ import { Heart, Plus, ThumbsDown, CheckCircle, Play } from "lucide-react";
 import ContentRow from "@/components/ContentRow";
 import ActionButtons from "@/components/ActionButtons";
 
+export const dynamic = "force-dynamic";
+
 export default async function SeriesDetailsPage({
   params,
 }: {
