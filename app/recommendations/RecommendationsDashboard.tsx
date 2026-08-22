@@ -89,27 +89,33 @@ export default function RecommendationsDashboard() {
           unresolved_likes: unresolvedLikes,
         };
 
-        // Temporary debug logging as requested
         console.log("[FLIXREC] preferences ready:", preferencesReady);
         console.log("[FLIXREC] liked media:", effectiveLikes);
         console.log("[FLIXREC] disliked media:", disliked);
         console.log("[FLIXREC] watched media:", watched);
         console.log("[FLIXREC] recommendation request:", unifiedPayload);
 
-        const recs = await getUnifiedRecommendations(unifiedPayload);
+        const res = await getUnifiedRecommendations(unifiedPayload);
 
         // Discard stale in-flight response
         if (currentRequestId !== requestIdRef.current) {
           return;
         }
 
-        if (Array.isArray(recs) && recs.length > 0) {
-          setRecommendations(recs as MovieCardProps[]);
-          setStatus("success");
+        if (res && res.success) {
+          if (Array.isArray(res.recommendations) && res.recommendations.length > 0) {
+            setRecommendations(res.recommendations);
+            setStatus("success");
+          } else {
+            setRecommendations([]);
+            setStatus("ready-no-preferences");
+          }
         } else {
-          // If ML returns 0 recs despite preferences, show empty state gracefully
-          setRecommendations([]);
-          setStatus("ready-no-preferences");
+          setErrorMessage(
+            res?.error ||
+              "The recommendation engine is currently starting up. Please click 'Try Again' in a moment."
+          );
+          setStatus("error");
         }
       } catch (error: any) {
         // Discard stale error
@@ -117,7 +123,12 @@ export default function RecommendationsDashboard() {
           return;
         }
         console.error("Failed to fetch recommendations:", error);
-        setErrorMessage(error?.message || "Unable to load recommendations. Please try again.");
+        const rawMsg = error?.message || "";
+        const friendlyMsg =
+          rawMsg.includes("441") || rawMsg.includes("Minified React error")
+            ? "Connecting to the recommendation engine. Please click 'Try Again' in a moment."
+            : rawMsg || "Unable to load recommendations. Please try again.";
+        setErrorMessage(friendlyMsg);
         setStatus("error");
       }
     }
