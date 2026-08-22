@@ -15,6 +15,7 @@ interface UserPreferencesState {
   user: UserProfile | null;
   isAuthenticated: boolean;
   authLoading: boolean;
+  preferencesReady: boolean;
   isAuthModalOpen: boolean;
   authModalMode: "signin" | "signup";
 
@@ -27,6 +28,7 @@ interface UserPreferencesState {
   openAuthModal: (mode?: "signin" | "signup") => void;
   closeAuthModal: () => void;
   checkAuth: () => Promise<void>;
+  setPreferencesReady: (ready: boolean) => void;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
@@ -124,6 +126,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
       user: null,
       isAuthenticated: false,
       authLoading: false,
+      preferencesReady: false,
       isAuthModalOpen: false,
       authModalMode: "signin",
 
@@ -132,6 +135,10 @@ export const useUserPreferences = create<UserPreferencesState>()(
       watched: [],
       watchlist: [],
       possible: [],
+
+      setPreferencesReady: (ready: boolean) => {
+        set({ preferencesReady: ready });
+      },
 
       openAuthModal: (mode = "signin") => {
         set({ isAuthModalOpen: true, authModalMode: mode });
@@ -162,20 +169,21 @@ export const useUserPreferences = create<UserPreferencesState>()(
                 createdAt: data.user.createdAt,
               },
               isAuthenticated: true,
-              liked: data.user.likedMedia || [],
-              disliked: data.user.dislikedMedia || [],
-              watched: data.user.watchedMedia || [],
-              watchlist: data.user.watchlist || [],
-              possible: data.user.possibleToWatch || [],
+              liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
+              disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
+              watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
+              watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
+              possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
+              preferencesReady: true,
             });
           } else {
-            set({ user: null, isAuthenticated: false });
+            set({ user: null, isAuthenticated: false, preferencesReady: true });
           }
         } catch (e) {
           console.warn("checkAuth error:", e);
-          set({ user: null, isAuthenticated: false });
+          set({ user: null, isAuthenticated: false, preferencesReady: true });
         } finally {
-          set({ authLoading: false });
+          set({ authLoading: false, preferencesReady: true });
         }
       },
 
@@ -209,19 +217,20 @@ export const useUserPreferences = create<UserPreferencesState>()(
               createdAt: data.user.createdAt,
             },
             isAuthenticated: true,
-            liked: data.user.likedMedia || [],
-            disliked: data.user.dislikedMedia || [],
-            watched: data.user.watchedMedia || [],
-            watchlist: data.user.watchlist || [],
-            possible: data.user.possibleToWatch || [],
+            liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
+            disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
+            watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
+            watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
+            possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
             isAuthModalOpen: false,
+            preferencesReady: true,
           });
 
           return { success: true };
         } catch (err: any) {
           return { success: false, error: err.message || "Failed to log in" };
         } finally {
-          set({ authLoading: false });
+          set({ authLoading: false, preferencesReady: true });
         }
       },
 
@@ -264,19 +273,20 @@ export const useUserPreferences = create<UserPreferencesState>()(
               createdAt: data.user.createdAt,
             },
             isAuthenticated: true,
-            liked: data.user.likedMedia || [],
-            disliked: data.user.dislikedMedia || [],
-            watched: data.user.watchedMedia || [],
-            watchlist: data.user.watchlist || [],
-            possible: data.user.possibleToWatch || [],
+            liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
+            disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
+            watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
+            watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
+            possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
             isAuthModalOpen: false,
+            preferencesReady: true,
           });
 
           return { success: true };
         } catch (err: any) {
           return { success: false, error: err.message || "Failed to register" };
         } finally {
-          set({ authLoading: false });
+          set({ authLoading: false, preferencesReady: true });
         }
       },
 
@@ -294,6 +304,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
           watched: [],
           watchlist: [],
           possible: [],
+          preferencesReady: true,
         });
       },
 
@@ -311,6 +322,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
             ? state.liked.filter((i) => getItemKey(i) !== targetKey) 
             : [...state.liked, finalItem],
           disliked: state.disliked.filter((i) => getItemKey(i) !== targetKey),
+          preferencesReady: true,
         });
 
         // Server sync if authenticated
@@ -339,6 +351,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
             ? state.disliked.filter((i) => getItemKey(i) !== targetKey) 
             : [...state.disliked, finalItem],
           liked: state.liked.filter((i) => getItemKey(i) !== targetKey),
+          preferencesReady: true,
         });
 
         // Server sync if authenticated
@@ -363,6 +376,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
 
         set({
           watched: toggleItem(state.watched, finalItem),
+          preferencesReady: true,
         });
 
         if (state.isAuthenticated) {
@@ -386,6 +400,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
 
         set({
           watchlist: toggleItem(state.watchlist, finalItem),
+          preferencesReady: true,
         });
 
         if (state.isAuthenticated) {
@@ -409,6 +424,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
 
         set({
           possible: toggleItem(state.possible, finalItem),
+          preferencesReady: true,
         });
 
         if (state.isAuthenticated) {
@@ -433,6 +449,11 @@ export const useUserPreferences = create<UserPreferencesState>()(
         watchlist: state.watchlist,
         possible: state.possible,
       }),
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.setPreferencesReady(true);
+        }
+      },
     }
   )
 );
