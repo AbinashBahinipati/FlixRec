@@ -236,6 +236,8 @@ export async function getUnifiedRecommendations(payload: {
       };
     }
 
+    console.log(`[RECOMMEND] Watchmode enrichment started: count=${data.recommendations.length}`);
+
     // Parallel enrichment with error boundaries
     const enrichedList = await Promise.all(
       data.recommendations.map((rec: any) => enrichSingleRecommendation(rec))
@@ -244,6 +246,8 @@ export async function getUnifiedRecommendations(payload: {
     const validRecommendations = enrichedList.filter(
       (item): item is MovieCardProps => item !== null
     );
+
+    console.log(`[RECOMMEND] Watchmode enrichment finished: success=${validRecommendations.length}`);
 
     return {
       success: true,

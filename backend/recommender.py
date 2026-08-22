@@ -45,18 +45,25 @@ app = FastAPI(
     version="1.0.0"
 )
 
-CORS_ORIGINS = os.environ.get(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000"
-).split(",")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins_raw = os.environ.get("CORS_ORIGINS", "*")
+if cors_origins_raw.strip() == "*":
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+else:
+    allowed_list = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_list,
+        allow_origin_regex=r"https?://.*\.vercel\.app|https?://localhost:\d+|https?://127\.0\.0\.1:\d+",
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 # ============================================================
@@ -680,6 +687,7 @@ def resolve_ml_id(movieLensId: int):
 @app.post("/recommend/unified")
 def recommend_unified(req: UnifiedRecommendationRequest):
     try:
+        logger.info("[RECOMMEND] request received")
         res = get_recommendation_resources()
         movies_df = res["movies_df"]
         movieLensToImdb = res["movieLensToImdb"]
@@ -710,10 +718,17 @@ def recommend_unified(req: UnifiedRecommendationRequest):
             if ml_id and isinstance(ml_id, (int, float)):
                 watched_ml_ids.append(int(ml_id))
 
+        logger.info(
+            f"[RECOMMEND] preference counts: liked={len(req.liked_media)} (ML={len(liked_ml_ids)}), "
+            f"disliked={len(req.disliked_media)}, watched={len(req.watched_media)}"
+        )
+
         excluded_ids = set(liked_ml_ids + disliked_ml_ids + watched_ml_ids)
         liked_genre_set = set(all_liked_genres)
 
         candidate_map = {}
+        ml_candidates_count = 0
+        content_candidates_count = 0
 
         # 1. Collaborative ML candidates if valid ML IDs exist
         if liked_ml_ids:
@@ -724,6 +739,7 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                 n=max(req.n * 3, 30),
                 res=res
             )
+            ml_candidates_count = len(ml_recs)
             for rec in ml_recs:
                 mid = rec["movieId"]
                 if mid in excluded_ids:
@@ -768,6 +784,7 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                         break
 
                 scored_content.sort(key=lambda x: x[0], reverse=True)
+                content_candidates_count = len(scored_content[:30])
                 for content_score, mid, row in scored_content[:30]:
                     candidate_map[mid] = {
                         "movieId": mid,
@@ -779,6 +796,12 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                         "imdbId": movieLensToImdb.get(mid),
                         "tmdbId": movieLensToTmdb.get(mid)
                     }
+
+        logger.info(
+            f"[RECOMMEND] ML candidate count: {ml_candidates_count}, "
+            f"content candidate count: {content_candidates_count}, "
+            f"merged candidate count: {len(candidate_map)}"
+        )
 
         # Fallback to standard recommend_movies if candidate_map is empty
         if not candidate_map:
@@ -803,6 +826,7 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                 }
 
         recommendations = sorted(candidate_map.values(), key=lambda x: x["score"], reverse=True)[:req.n]
+        logger.info(f"[RECOMMEND] response generated: count={len(recommendations)}")
 
         return {
             "success": True,
