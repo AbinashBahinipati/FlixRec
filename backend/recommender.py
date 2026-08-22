@@ -505,18 +505,30 @@ def resolve_external_to_movielens(
     movieLensToTmdb = res["movieLensToTmdb"]
     movies_df = res["movies_df"]
 
+    imdb_found = False
+    tmdb_found = False
+    title_fallback_used = False
+
     # 1. Try IMDb ID
     if imdb_id:
         clean_imdb = str(imdb_id).strip().lower()
         if clean_imdb in imdbToMovieLens:
             mid = int(imdbToMovieLens[clean_imdb])
+            imdb_found = True
             return {
                 "resolved": True,
                 "found": True,
                 "movieLensId": mid,
                 "imdbId": movieLensToImdb.get(mid),
                 "tmdbId": movieLensToTmdb.get(mid),
-                "title": get_movie_title(mid, res)
+                "title": get_movie_title(mid, res),
+                "debug": {
+                    "receivedImdbId": str(imdb_id) if imdb_id else None,
+                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
+                    "imdbLookup": True,
+                    "tmdbLookup": False,
+                    "titleYearFallback": False
+                }
             }
 
     # 2. Try TMDB ID
@@ -526,13 +538,21 @@ def resolve_external_to_movielens(
             clean_tmdb = clean_tmdb[:-2]
         if clean_tmdb in tmdbToMovieLens:
             mid = int(tmdbToMovieLens[clean_tmdb])
+            tmdb_found = True
             return {
                 "resolved": True,
                 "found": True,
                 "movieLensId": mid,
                 "imdbId": movieLensToImdb.get(mid),
                 "tmdbId": movieLensToTmdb.get(mid),
-                "title": get_movie_title(mid, res)
+                "title": get_movie_title(mid, res),
+                "debug": {
+                    "receivedImdbId": str(imdb_id) if imdb_id else None,
+                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
+                    "imdbLookup": False,
+                    "tmdbLookup": True,
+                    "titleYearFallback": False
+                }
             }
 
     # 3. Fallback to Title + Year
@@ -540,8 +560,10 @@ def resolve_external_to_movielens(
         norm_title = clean_movie_title(title)
         matches = movies_df[movies_df["normalized_title"] == norm_title]
         if not matches.empty:
+            title_fallback_used = True
             if year:
-                year_matches = matches[matches["title"].str.contains(f"\\({year}\\)")]
+                year_str = str(year)[:4]
+                year_matches = matches[matches["title"].str.contains(f"\\({year_str}\\)")]
                 if not year_matches.empty:
                     mid = int(year_matches.iloc[0]["movieId"])
                     return {
@@ -550,7 +572,14 @@ def resolve_external_to_movielens(
                         "movieLensId": mid,
                         "imdbId": movieLensToImdb.get(mid),
                         "tmdbId": movieLensToTmdb.get(mid),
-                        "title": year_matches.iloc[0]["title"]
+                        "title": year_matches.iloc[0]["title"],
+                        "debug": {
+                            "receivedImdbId": str(imdb_id) if imdb_id else None,
+                            "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
+                            "imdbLookup": False,
+                            "tmdbLookup": False,
+                            "titleYearFallback": True
+                        }
                     }
             mid = int(matches.iloc[0]["movieId"])
             return {
@@ -559,7 +588,14 @@ def resolve_external_to_movielens(
                 "movieLensId": mid,
                 "imdbId": movieLensToImdb.get(mid),
                 "tmdbId": movieLensToTmdb.get(mid),
-                "title": matches.iloc[0]["title"]
+                "title": matches.iloc[0]["title"],
+                "debug": {
+                    "receivedImdbId": str(imdb_id) if imdb_id else None,
+                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
+                    "imdbLookup": False,
+                    "tmdbLookup": False,
+                    "titleYearFallback": True
+                }
             }
 
     return {
@@ -568,7 +604,14 @@ def resolve_external_to_movielens(
         "movieLensId": None,
         "imdbId": str(imdb_id) if imdb_id else None,
         "tmdbId": str(tmdb_id) if tmdb_id else None,
-        "reason": "No MovieLens mapping found"
+        "reason": "No MovieLens mapping found",
+        "debug": {
+            "receivedImdbId": str(imdb_id) if imdb_id else None,
+            "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
+            "imdbLookup": False,
+            "tmdbLookup": False,
+            "titleYearFallback": False
+        }
     }
 
 

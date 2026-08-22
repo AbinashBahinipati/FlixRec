@@ -90,13 +90,7 @@ async function normalizeAndResolveMedia(item: MovieCardProps): Promise<MovieCard
   if (finalItem.movieLensId === undefined && finalItem.ml_id === undefined && !finalItem.resolved) {
     try {
       const { fetchMovieLensId } = await import("@/app/actions/recommendations");
-      const { resolved, ml_id, imdbId, tmdbId } = await fetchMovieLensId(
-        finalItem.title, 
-        finalItem.year || finalItem.release_date, 
-        finalItem.type || "movie", 
-        finalItem.tmdbId, 
-        finalItem.imdbId
-      );
+      const { resolved, ml_id, imdbId, tmdbId } = await fetchMovieLensId(finalItem);
       
       finalItem.resolved = resolved;
       finalItem.movieLensId = ml_id || null;

@@ -33,6 +33,18 @@ export interface UnifiedRecommendationResult {
   error?: string;
 }
 
+export interface ResolveMovieLensInput {
+  title: string;
+  year?: string | number | null;
+  type?: "movie" | "series" | "tv";
+  watchmodeId?: string | number | null;
+  id?: string | number | null;
+  tmdbId?: string | number | null;
+  imdbId?: string | null;
+  tmdb_id?: string | number | null;
+  imdb_id?: string | null;
+}
+
 const FASTAPI_URL = (
   process.env.FASTAPI_URL ||
   process.env.NEXT_PUBLIC_API_BASE_URL ||
@@ -56,20 +68,74 @@ export async function checkBackendHealth(): Promise<{ online: boolean; isColdSta
 }
 
 export async function fetchMovieLensId(
-  title: string,
-  year?: string | number,
-  type: "movie" | "series" | "tv" = "movie",
-  tmdbId?: string | number | null,
-  imdbId?: string | null
-): Promise<{ resolved: boolean; ml_id: number | null; imdbId?: string | null; tmdbId?: string | null }> {
+  inputOrTitle: ResolveMovieLensInput | string,
+  legacyYear?: string | number,
+  legacyType: "movie" | "series" | "tv" = "movie",
+  legacyTmdbId?: string | number | null,
+  legacyImdbId?: string | null,
+  legacyWatchmodeId?: string | number | null
+): Promise<{
+  resolved: boolean;
+  ml_id: number | null;
+  imdbId?: string | null;
+  tmdbId?: string | null;
+  title?: string;
+  debug?: any;
+}> {
   try {
+    let title: string;
+    let year: string | number | undefined;
+    let type: "movie" | "series" | "tv" = "movie";
+    let tmdbId: string | number | undefined;
+    let imdbId: string | undefined;
+    let watchmodeId: string | number | undefined;
+
+    if (typeof inputOrTitle === "object" && inputOrTitle !== null) {
+      title = inputOrTitle.title;
+      year = inputOrTitle.year ?? undefined;
+      type = inputOrTitle.type || "movie";
+      tmdbId = inputOrTitle.tmdbId ?? inputOrTitle.tmdb_id ?? undefined;
+      imdbId = (inputOrTitle.imdbId ?? inputOrTitle.imdb_id) || undefined;
+      watchmodeId = inputOrTitle.watchmodeId ?? inputOrTitle.id ?? undefined;
+    } else {
+      title = inputOrTitle;
+      year = legacyYear;
+      type = legacyType;
+      tmdbId = legacyTmdbId ?? undefined;
+      imdbId = legacyImdbId || undefined;
+      watchmodeId = legacyWatchmodeId ?? undefined;
+    }
+
+    if (type === "series" || type === "tv") {
+      return {
+        resolved: false,
+        ml_id: null,
+        imdbId: imdbId || null,
+        tmdbId: tmdbId ? String(tmdbId) : null,
+      };
+    }
+
+    // If external IDs are missing, perform ONE server-side Watchmode lookup using watchmodeId
+    if ((!imdbId || !tmdbId) && watchmodeId) {
+      try {
+        const details = await getMovieDetails(watchmodeId);
+        if (details) {
+          if (!imdbId && details.imdb_id) imdbId = details.imdb_id;
+          if (!tmdbId && details.tmdb_id) tmdbId = details.tmdb_id;
+          if (!year && details.year) year = details.year;
+        }
+      } catch (err) {
+        console.warn(`[fetchMovieLensId] Server-side Watchmode lookup failed for ID ${watchmodeId}:`, err);
+      }
+    }
+
     const url = `${FASTAPI_URL}/resolve-external`;
 
     let yearNum: number | undefined;
     if (typeof year === "number") {
       yearNum = year;
     } else if (year) {
-      const yearMatch = year.match(/\d{4}/);
+      const yearMatch = String(year).match(/\d{4}/);
       if (yearMatch) yearNum = parseInt(yearMatch[0], 10);
     }
 
@@ -93,8 +159,10 @@ export async function fetchMovieLensId(
     return {
       resolved: !!data.found,
       ml_id: data.movieLensId || null,
-      imdbId: data.imdbId || null,
-      tmdbId: data.tmdbId || null,
+      imdbId: data.imdbId || imdbId || null,
+      tmdbId: data.tmdbId || (tmdbId ? String(tmdbId) : null),
+      title: data.title || title,
+      debug: data.debug,
     };
   } catch (err) {
     console.warn("Error resolving MovieLens ID (non-fatal):", err);
@@ -193,11 +261,40 @@ export async function getUnifiedRecommendations(payload: {
   n?: number;
 }): Promise<UnifiedRecommendationResult> {
   try {
+    // Dynamic pre-resolution: guarantee that all liked movies have their MovieLens IDs resolved
+    const resolvedLikedMedia = await Promise.all(
+      (payload.liked_media || []).map(async (item: any) => {
+        const copy = { ...item };
+        const isSeries = copy.type === "series" || copy.type === "tv";
+        if (!isSeries && !copy.movieLensId && !copy.ml_id) {
+          const res = await fetchMovieLensId(copy);
+          if (res.resolved && res.ml_id) {
+            copy.movieLensId = res.ml_id;
+            copy.ml_id = res.ml_id;
+            copy.resolved = true;
+            copy.resolvableByML = true;
+            if (res.imdbId) copy.imdbId = res.imdbId;
+            if (res.tmdbId) copy.tmdbId = res.tmdbId;
+          }
+        }
+        return copy;
+      })
+    );
+
+    const liked_movie_ids = resolvedLikedMedia
+      .map((m) => m.movieLensId ?? m.ml_id)
+      .filter((id): id is number => typeof id === "number" && !isNaN(id));
+
+    console.log(
+      `[RECOMMEND] Dynamic ID Resolution: ${liked_movie_ids.length} MovieLens IDs resolved from ${resolvedLikedMedia.length} total liked items.`
+    );
+
     const res = await fetch(`${FASTAPI_URL}/recommend/unified`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        liked_media: payload.liked_media,
+        liked_movie_ids,
+        liked_media: resolvedLikedMedia,
         disliked_media: payload.disliked_media,
         watched_media: payload.watched_media,
         n: payload.n || 10,
