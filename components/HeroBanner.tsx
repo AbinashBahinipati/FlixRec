@@ -1,12 +1,13 @@
 "use client";
 
-import { Play, Plus, Check, Info } from "lucide-react";
+import { Plus, Check, Info } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { isMediaInList } from "@/lib/mediaIdentity";
 import { MovieCardProps } from "@/components/MovieCard";
+import PlayTrailerButton from "@/components/PlayTrailerButton";
 
 interface HeroBannerProps {
   movie: {
@@ -118,25 +119,10 @@ export default function HeroBanner({ movie }: HeroBannerProps) {
           </p>
           
           <div className="flex flex-wrap items-center gap-4">
-            {trailerUrl ? (
-              <a
-                href={trailerUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-2 bg-white text-black px-6 py-3 rounded-full font-bold hover:bg-gray-200 transition-all duration-200 shadow-lg hover:scale-105 active:scale-95"
-              >
-                <Play className="w-5 h-5 fill-black" />
-                Play Trailer
-              </a>
-            ) : (
-              <button
-                disabled
-                className="flex items-center gap-2 bg-white/20 text-white/50 px-6 py-3 rounded-full font-bold cursor-not-allowed"
-              >
-                <Play className="w-5 h-5" />
-                No Trailer
-              </button>
-            )}
+            <PlayTrailerButton
+              title={movie.title}
+              trailerUrl={movie.trailer}
+            />
 
             <button
               onClick={handleWatchlistToggle}

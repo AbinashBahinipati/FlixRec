@@ -3,6 +3,7 @@ import Image from "next/image";
 import { Heart, Plus, ThumbsDown, CheckCircle, Play } from "lucide-react";
 import ContentRow from "@/components/ContentRow";
 import ActionButtons from "@/components/ActionButtons";
+import PlayTrailerButton from "@/components/PlayTrailerButton";
 
 export const dynamic = "force-dynamic";
 
@@ -113,22 +114,10 @@ export default async function MovieDetailsPage({
             </div>
 
             <div className="flex flex-wrap gap-4 mb-8">
-              {trailerUrl ? (
-                <a 
-                  href={trailerUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 bg-white text-black px-6 py-3 rounded-full font-bold hover:bg-gray-200 transition-colors"
-                >
-                  <Play className="w-5 h-5 fill-black" />
-                  Play Trailer
-                </a>
-              ) : (
-                <button disabled className="flex items-center gap-2 bg-white/20 text-white/50 px-6 py-3 rounded-full font-bold cursor-not-allowed">
-                  <Play className="w-5 h-5" />
-                  No Trailer
-                </button>
-              )}
+              <PlayTrailerButton
+                title={movie.title}
+                trailerUrl={movie.trailer}
+              />
               
               <ActionButtons item={mapToCard(movie)} />
             </div>
