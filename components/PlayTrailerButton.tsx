@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { Play } from "lucide-react";
-import TrailerModal from "@/components/TrailerModal";
+import { getMediaTrailerUrl } from "@/lib/trailer";
 
 interface PlayTrailerButtonProps {
   title: string;
@@ -15,27 +14,35 @@ export default function PlayTrailerButton({
   trailerUrl,
   className,
 }: PlayTrailerButtonProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const finalTrailerUrl = getMediaTrailerUrl({ title, trailer: trailerUrl });
 
-  return (
-    <>
+  if (!finalTrailerUrl) {
+    return (
       <button
-        onClick={() => setIsOpen(true)}
+        disabled
         className={
           className ||
-          "flex items-center gap-2 bg-white text-black px-6 py-3 rounded-full font-bold hover:bg-gray-200 transition-all duration-200 shadow-lg hover:scale-105 active:scale-95"
+          "flex items-center gap-2 bg-white/20 text-white/50 px-6 py-3 rounded-full font-bold cursor-not-allowed"
         }
       >
-        <Play className="w-5 h-5 fill-black" />
-        Play Trailer
+        <Play className="w-5 h-5" />
+        No Trailer
       </button>
+    );
+  }
 
-      <TrailerModal
-        isOpen={isOpen}
-        onClose={() => setIsOpen(false)}
-        title={title}
-        trailerUrl={trailerUrl}
-      />
-    </>
+  return (
+    <a
+      href={finalTrailerUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={
+        className ||
+        "flex items-center gap-2 bg-white text-black px-6 py-3 rounded-full font-bold hover:bg-gray-200 transition-all duration-200 shadow-lg hover:scale-105 active:scale-95"
+      }
+    >
+      <Play className="w-5 h-5 fill-black" />
+      Play Trailer
+    </a>
   );
 }
