@@ -1,36 +1,140 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🎬 FLIXREC — AI Movie & Web Series Recommendation System
 
-## Getting Started
+<p align="center">
+  <img src="https://img.shields.io/badge/Next.js-15-black?style=for-the-badge&logo=next.js" />
+  <img src="https://img.shields.io/badge/React-19-blue?style=for-the-badge&logo=react" />
+  <img src="https://img.shields.io/badge/Python-3.9+-yellow?style=for-the-badge&logo=python" />
+  <img src="https://img.shields.io/badge/FastAPI-green?style=for-the-badge&logo=fastapi" />
+  <img src="https://img.shields.io/badge/PyTorch-red?style=for-the-badge&logo=pytorch" />
+  <img src="https://img.shields.io/badge/MongoDB-green?style=for-the-badge&logo=mongodb" />
+</p>
 
-First, run the development server:
+<p align="center">
+  <b>An intelligent movie and web series recommendation platform that learns from your preferences.</b>
+</p>
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+<p align="center">
+  🌐 <b>Live Demo:</b> https://flixrec.vercel.app/
+</p>
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 📌 About The Project
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**FlixRec** is an AI-powered movie and web series recommendation system designed to provide personalized recommendations based on a user's interests and viewing activity.
 
-## Learn More
+The system combines:
 
-To learn more about Next.js, take a look at the following resources:
+- 🤖 Collaborative Filtering
+- 🎯 Content-Based Recommendation
+- 🧠 PyTorch Matrix Factorization
+- 🎬 MovieLens Dataset
+- 🌐 Watchmode API
+- 🎞️ TMDB / IMDb metadata
+- 💾 MongoDB user preferences
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Unlike a basic recommendation system, FlixRec supports both **movies and TV/web series**, including newer titles that may not exist in the MovieLens dataset.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+---
 
-## Deploy on Vercel
+## ✨ Features
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### 🎯 Personalized Recommendations
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Recommendations are generated based on the user's:
+
+- Liked movies
+- Liked web series
+- Watched content
+- Disliked content
+- Genres and content preferences
+
+The system combines collaborative and content-based recommendation techniques to generate personalized results.
+
+### ❤️ Like / Unlike System
+
+Users can:
+
+- Like movies
+- Unlike movies
+- Like web series
+- Remove likes
+- Maintain preferences across sessions
+
+User preferences are synchronized and persisted using the application's preference system and MongoDB authentication backend.
+
+### 🎬 Movie & Web Series Support
+
+FlixRec supports:
+
+- Movies
+- TV shows
+- Web series
+- New releases
+- Older movies
+- Content that is not present in MovieLens
+
+### 🔎 Search
+
+Users can search for movies and series and interact with the results.
+
+### 📋 Watchlist
+
+Users can save content to their personal watchlist for later.
+
+### 👤 User Authentication
+
+FlixRec provides:
+
+- User registration
+- User login
+- Secure sessions
+- Password hashing
+- Persistent user preferences
+
+### ⭐ Ratings & Metadata
+
+Movie and series information includes:
+
+- Ratings
+- Posters
+- Backdrops
+- Genres
+- Overview
+- Release information
+- Streaming availability where available
+
+---
+
+# 🧠 Recommendation Architecture
+
+FlixRec uses a **hybrid recommendation architecture**.
+
+```text
+                    USER
+                     │
+                     ▼
+              User Preferences
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+   MovieLens IDs          Media Metadata
+          │                     │
+          ▼                     ▼
+ Collaborative            Content-Based
+ Filtering                Recommendation
+          │                     │
+          └──────────┬──────────┘
+                     ▼
+              Hybrid Ranking
+                     │
+                     ▼
+              Recommendation
+                  Results
+                     │
+                     ▼
+             Watchmode Enrichment
+                     │
+                     ▼
+             Posters + Details
