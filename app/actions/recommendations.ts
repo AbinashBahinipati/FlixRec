@@ -3,6 +3,9 @@
 import {
   searchMovies,
   searchSeries,
+  getTrendingMovies,
+  getPopularMovies,
+  getTrendingSeries,
   getWatchmodeImageUrl,
   getDetailsByExternalId,
   getMovieDetails,
@@ -317,15 +320,134 @@ async function enrichSingleRecommendation(rec: any): Promise<MovieCardProps | nu
   }
 }
 
+async function generateContentFallbackRecommendations(
+  payload: {
+    liked_media: any[];
+    disliked_media: any[];
+    watched_media: any[];
+  },
+  targetN: number = 10
+): Promise<MovieCardProps[]> {
+  try {
+    const excludedIds = new Set<string>();
+    const excludedTitles = new Set<string>();
+    const likedGenres = new Set<string>();
+
+    const allExcluded = [
+      ...(payload.liked_media || []),
+      ...(payload.disliked_media || []),
+      ...(payload.watched_media || []),
+    ];
+
+    for (const item of allExcluded) {
+      if (item.id) excludedIds.add(String(item.id));
+      if (item.watchmodeId) excludedIds.add(String(item.watchmodeId));
+      if (item.title) excludedTitles.add(item.title.toLowerCase().trim());
+    }
+
+    for (const item of payload.liked_media || []) {
+      const g = item.genres;
+      if (Array.isArray(g)) {
+        g.forEach((genre) => likedGenres.add(String(genre).toLowerCase().trim()));
+      } else if (typeof g === "string") {
+        g.split(/[,|]/).forEach((genre) => likedGenres.add(genre.toLowerCase().trim()));
+      }
+    }
+
+    const [trendingMovies, popularMovies, trendingSeries] = await Promise.allSettled([
+      getTrendingMovies(),
+      getPopularMovies(),
+      getTrendingSeries(),
+    ]);
+
+    const candidates: any[] = [];
+    const addResults = (settled: PromiseSettledResult<any>) => {
+      if (settled.status === "fulfilled" && settled.value?.results) {
+        candidates.push(...settled.value.results);
+      }
+    };
+
+    addResults(trendingMovies);
+    addResults(popularMovies);
+    addResults(trendingSeries);
+
+    const scored = candidates
+      .filter((c) => {
+        if (!c || (!c.id && !c.title && !c.name)) return false;
+        const cid = String(c.id);
+        const ctitle = (c.title || c.name || "").toLowerCase().trim();
+        if (excludedIds.has(cid) || excludedTitles.has(ctitle)) return false;
+        return true;
+      })
+      .map((c) => {
+        const cGenres = Array.isArray(c.genre_names)
+          ? c.genre_names.map((g: string) => g.toLowerCase().trim())
+          : typeof c.genres === "string"
+          ? c.genres.split(/[,|]/).map((g: string) => g.toLowerCase().trim())
+          : [];
+
+        let overlap = 0;
+        for (const g of cGenres) {
+          if (likedGenres.has(g)) overlap++;
+        }
+
+        const score = 0.5 + 0.15 * overlap;
+        const publicRating =
+          typeof c.user_rating === "number" && c.user_rating > 0
+            ? c.user_rating
+            : typeof c.critic_score === "number" && c.critic_score > 0
+            ? c.critic_score / 10
+            : undefined;
+
+        return {
+          id: c.id,
+          watchmodeId: c.id,
+          title: c.title || c.name || "Recommendation",
+          poster_path: getWatchmodeImageUrl(c.poster || c.image_url),
+          poster: getWatchmodeImageUrl(c.poster || c.image_url),
+          posterUrl: getWatchmodeImageUrl(c.poster || c.image_url),
+          rating: publicRating,
+          vote_average: publicRating,
+          release_date: c.year ? String(c.year) : c.release_date || "",
+          type: c.type === "tv_series" || c.type === "series" ? ("series" as const) : ("movie" as const),
+          score: Math.min(1.0, score),
+          genres: Array.isArray(c.genre_names) ? c.genre_names.join(", ") : c.genres || "",
+          tmdbId: c.tmdb_id ? String(c.tmdb_id) : undefined,
+          imdbId: c.imdb_id ? String(c.imdb_id) : undefined,
+          source: "content" as const,
+        };
+      });
+
+    scored.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    // Deduplicate by ID
+    const seen = new Set<string>();
+    const uniqueList: MovieCardProps[] = [];
+    for (const item of scored) {
+      const key = String(item.id || item.title);
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueList.push(item);
+      }
+      if (uniqueList.length >= targetN) break;
+    }
+
+    return uniqueList;
+  } catch (err) {
+    console.warn("[generateContentFallbackRecommendations] Fallback generation error:", err);
+    return [];
+  }
+}
+
 export async function getUnifiedRecommendations(payload: {
   liked_media: any[];
   disliked_media: any[];
   watched_media: any[];
   n?: number;
 }): Promise<UnifiedRecommendationResult> {
-  try {
-    const targetN = payload.n || 10;
+  const targetN = payload.n || 10;
 
+  try {
     // Dynamic pre-resolution: guarantee that all liked movies have their MovieLens IDs resolved
     const resolvedLikedMedia = await Promise.all(
       (payload.liked_media || []).map(async (item: any) => {
@@ -370,76 +492,68 @@ export async function getUnifiedRecommendations(payload: {
       `[RECOMMEND] Dynamic ID Resolution: ${liked_movie_ids.length} MovieLens IDs resolved from ${resolvedLikedMedia.length} total liked items.`
     );
 
-    const res = await fetchFromFastApi("/recommend/unified", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        liked_movie_ids,
-        disliked_movie_ids,
-        watched_movie_ids,
+    let res: Response | null = null;
+    try {
+      res = await fetchFromFastApi("/recommend/unified", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          liked_movie_ids,
+          disliked_movie_ids,
+          watched_movie_ids,
+          liked_media: resolvedLikedMedia,
+          disliked_media: payload.disliked_media || [],
+          watched_media: payload.watched_media || [],
+          unresolved_likes,
+          n: Math.max(targetN * 2, 20),
+        }),
+        signal: AbortSignal.timeout(8000), // 8s timeout for cloud responsiveness
+      });
+    } catch (backendErr: any) {
+      console.warn("[RECOMMEND] FastAPI unreachable. Engaging cloud fallback generator:", backendErr?.message || backendErr);
+    }
+
+    if (res && res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.recommendations) && data.recommendations.length > 0) {
+        const enrichedList = await Promise.all(
+          data.recommendations.map((rec: any) => enrichSingleRecommendation(rec))
+        );
+
+        const validRecommendations = enrichedList
+          .filter((item): item is MovieCardProps => item !== null)
+          .slice(0, targetN);
+
+        if (validRecommendations.length > 0) {
+          return {
+            success: true,
+            recommendations: validRecommendations,
+          };
+        }
+      }
+    }
+
+    // Graceful cloud fallback: Guarantee recommendations are never empty or broken on Vercel
+    console.log("[RECOMMEND] Serving resilient content recommendations fallback.");
+    const fallbackRecs = await generateContentFallbackRecommendations(
+      {
         liked_media: resolvedLikedMedia,
-        disliked_media: payload.disliked_media || [],
-        watched_media: payload.watched_media || [],
-        unresolved_likes,
-        n: Math.max(targetN * 2, 20),
-      }),
-      signal: AbortSignal.timeout(15000), // 15s timeout
-    });
-
-    if (!res.ok) {
-      console.warn(`[Recommendations Action] Backend returned HTTP ${res.status}: ${res.statusText}`);
-      const isCold = res.status === 502 || res.status === 503 || res.status === 504 || res.status === 500;
-      return {
-        success: false,
-        isColdStart: isCold,
-        recommendations: [],
-        error: isCold
-          ? "Recommendation engine is starting..."
-          : `Recommendation service error (HTTP ${res.status})`,
-      };
-    }
-
-    const data = await res.json();
-    if (!data.success || !Array.isArray(data.recommendations)) {
-      return {
-        success: false,
-        isColdStart: false,
-        recommendations: [],
-        error: data.error || "The recommendation engine is temporarily unavailable.",
-      };
-    }
-
-    if (data.recommendations.length === 0) {
-      return {
-        success: true,
-        recommendations: [],
-      };
-    }
-
-    console.log(`[RECOMMEND] Watchmode enrichment started: count=${data.recommendations.length}`);
-
-    // Parallel enrichment with error boundaries
-    const enrichedList = await Promise.all(
-      data.recommendations.map((rec: any) => enrichSingleRecommendation(rec))
+        disliked_media: payload.disliked_media,
+        watched_media: payload.watched_media,
+      },
+      targetN
     );
-
-    const validRecommendations = enrichedList
-      .filter((item): item is MovieCardProps => item !== null)
-      .slice(0, targetN);
-
-    console.log(`[RECOMMEND] Watchmode enrichment finished: success=${validRecommendations.length}`);
 
     return {
       success: true,
-      recommendations: validRecommendations,
+      recommendations: fallbackRecs,
     };
   } catch (error: any) {
-    console.warn("[Recommendations Action] Network/timeout contacting backend:", error?.message || error);
+    console.warn("[Recommendations Action] Unexpected error, generating fallback:", error?.message || error);
+    const fallbackRecs = await generateContentFallbackRecommendations(payload, targetN);
     return {
-      success: false,
-      isColdStart: true,
-      recommendations: [],
-      error: "Recommendation engine is starting...",
+      success: true,
+      recommendations: fallbackRecs,
     };
   }
 }
