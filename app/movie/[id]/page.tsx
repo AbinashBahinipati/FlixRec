@@ -25,7 +25,13 @@ export default async function MovieDetailsPage({
     );
   }
 
-  const trailerUrl = movie.trailer;
+  const trailerUrl =
+    movie.trailer ||
+    (movie.title
+      ? `https://www.youtube.com/results?search_query=${encodeURIComponent(
+          movie.title + " official trailer"
+        )}`
+      : null);
 
   const formatRuntime = (minutes: number) => {
     const h = Math.floor(minutes / 60);

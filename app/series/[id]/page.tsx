@@ -25,7 +25,13 @@ export default async function SeriesDetailsPage({
     );
   }
 
-  const trailerUrl = series.trailer;
+  const trailerUrl =
+    series.trailer ||
+    (series.title || series.name
+      ? `https://www.youtube.com/results?search_query=${encodeURIComponent(
+          (series.title || series.name) + " official trailer"
+        )}`
+      : null);
 
   const mapToCard = (item: any) => {
     const publicRating = (typeof item.user_rating === "number" && item.user_rating > 0)

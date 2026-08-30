@@ -21,12 +21,24 @@ export default async function Home() {
   // Using the first trending movie as the hero banner
   const heroMovie = trendingMovies.results[0];
   const heroData = heroMovie ? {
-    title: heroMovie.title || "Unknown Title",
-    plot_overview: heroMovie.plot_overview,
-    backdrop: getWatchmodeImageUrl(heroMovie.backdrop),
-    release_date: heroMovie.release_date || "",
+    id: heroMovie.id,
+    watchmodeId: heroMovie.id,
+    title: heroMovie.title || heroMovie.name || "Unknown Title",
+    plot_overview: heroMovie.plot_overview || "",
+    backdrop: getWatchmodeImageUrl(heroMovie.backdrop, "original"),
+    poster: getWatchmodeImageUrl(heroMovie.poster || heroMovie.image_url),
+    poster_path: getWatchmodeImageUrl(heroMovie.poster || heroMovie.image_url),
+    posterUrl: getWatchmodeImageUrl(heroMovie.poster || heroMovie.image_url),
+    release_date: heroMovie.release_date || (heroMovie.year ? heroMovie.year.toString() : ""),
+    year: heroMovie.year || (heroMovie.release_date ? parseInt(heroMovie.release_date) : undefined),
     user_rating: heroMovie.user_rating || null,
+    rating: heroMovie.user_rating || null,
     genre: heroMovie.genre_names ? heroMovie.genre_names.join(" • ") : "Action • Sci-Fi",
+    genres: heroMovie.genre_names ? heroMovie.genre_names.join(", ") : "",
+    trailer: heroMovie.trailer || null,
+    type: "movie" as const,
+    tmdbId: heroMovie.tmdb_id?.toString() || heroMovie.tmdbId?.toString(),
+    imdbId: heroMovie.imdb_id?.toString() || heroMovie.imdbId?.toString(),
   } : null;
 
   if (!heroMovie) {
