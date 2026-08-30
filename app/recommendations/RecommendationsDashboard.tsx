@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { getUnifiedRecommendations } from "@/app/actions/recommendations";
 import MovieCard, { MovieCardProps } from "@/components/MovieCard";
+import { getCanonicalMediaKey } from "@/lib/mediaIdentity";
 import { Sparkles, RefreshCw, AlertCircle } from "lucide-react";
 
 type RecommendationStatus =
@@ -30,6 +31,7 @@ export default function RecommendationsDashboard() {
   const [retryCount, setRetryCount] = useState(0);
 
   const requestIdRef = useRef(0);
+  const lastSignatureRef = useRef<string>("");
 
   useEffect(() => {
     // 1. Guard: Wait for preferences to hydrate from localStorage and/or MongoDB
@@ -43,14 +45,28 @@ export default function RecommendationsDashboard() {
     const hasAnyPreferences = effectiveLikes.length > 0 || watched.length > 0;
 
     if (!hasAnyPreferences) {
-      console.log("[FLIXREC] preferences ready:", preferencesReady);
-      console.log("[FLIXREC] liked media: [] (no preferences found)");
       setStatus("ready-no-preferences");
       setRecommendations([]);
+      lastSignatureRef.current = "";
       return;
     }
 
-    // 3. Initiate recommendation request with monotonic request ID
+    // 3. Stable signature to prevent unnecessary refetches
+    const currentSignature = [
+      liked.map(getCanonicalMediaKey).sort().join(","),
+      watchlist.map(getCanonicalMediaKey).sort().join(","),
+      watched.map(getCanonicalMediaKey).sort().join(","),
+      disliked.map(getCanonicalMediaKey).sort().join(","),
+      retryCount,
+    ].join("::");
+
+    if (currentSignature === lastSignatureRef.current && status === "success") {
+      return;
+    }
+
+    lastSignatureRef.current = currentSignature;
+
+    // 4. Initiate recommendation request with monotonic request ID
     const currentRequestId = ++requestIdRef.current;
     setStatus("loading-recommendations");
     setErrorMessage("");
@@ -73,6 +89,7 @@ export default function RecommendationsDashboard() {
           .filter((m) => !m.movieLensId && !m.ml_id)
           .map((m) => ({
             title: m.title,
+            type: m.type || "movie",
             reason:
               m.type === "series" || m.type === "tv"
                 ? "TV/Web series participate via content-based recommendations"
@@ -90,10 +107,8 @@ export default function RecommendationsDashboard() {
           unresolved_likes: unresolvedLikes,
         };
 
-        console.log("[FLIXREC] preferences ready:", preferencesReady);
-        console.log("[FLIXREC] liked media:", effectiveLikes);
-        console.log("[FLIXREC] disliked media:", disliked);
-        console.log("[FLIXREC] watched media:", watched);
+        console.log("[FLIXREC] preference signature:", currentSignature);
+        console.log("[FLIXREC] liked media count:", effectiveLikes.length);
         console.log("[FLIXREC] recommendation request:", unifiedPayload);
 
         // ATTEMPT 1
@@ -107,8 +122,8 @@ export default function RecommendationsDashboard() {
             setStatus("success");
             return;
           } else {
-            setRecommendations([]);
-            setStatus("ready-no-preferences");
+            setErrorMessage("No matching recommendations could be found for your preferences. Try liking additional titles.");
+            setStatus("error");
             return;
           }
         }
@@ -131,8 +146,8 @@ export default function RecommendationsDashboard() {
               setStatus("success");
               return;
             } else {
-              setRecommendations([]);
-              setStatus("ready-no-preferences");
+              setErrorMessage("No matching recommendations could be found for your preferences. Try liking additional titles.");
+              setStatus("error");
               return;
             }
           }
@@ -152,18 +167,18 @@ export default function RecommendationsDashboard() {
                 setStatus("success");
                 return;
               } else {
-                setRecommendations([]);
-                setStatus("ready-no-preferences");
+                setErrorMessage("No matching recommendations could be found for your preferences. Try liking additional titles.");
+                setStatus("error");
                 return;
               }
             }
           }
         }
 
-        // If all 3 bounded retries failed or a non-retryable error occurred:
+        // If all retries failed or a non-retryable error occurred:
         setErrorMessage(
           res.isColdStart
-            ? "Unable to load recommendations right now. Please try again."
+            ? "Recommendation engine is starting up. Please click Try Again in a few seconds."
             : res.error || "Unable to load recommendations right now. Please try again."
         );
         setStatus("error");
@@ -188,7 +203,7 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE B: Recommendations in flight (fast path)
+  // STATE B: Recommendations in flight
   if (status === "loading-recommendations") {
     return (
       <div className="flex flex-col justify-center items-center py-24 text-gray-400">
@@ -214,12 +229,25 @@ export default function RecommendationsDashboard() {
     );
   }
 
-  // STATE D: Real Failure after bounded retries
-  if (status === "error") {
+  // STATE D: Genuine Empty Preferences
+  if (status === "ready-no-preferences") {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-gray-500 bg-[#111] rounded-2xl border border-white/5 p-8 text-center">
+        <Sparkles className="w-12 h-12 text-gray-600 mb-4" />
+        <p className="text-xl font-semibold text-gray-300 mb-2">Not enough data</p>
+        <p className="text-sm text-gray-400 max-w-md">
+          Like or add movies and series to your watchlist to get AI-powered recommendations tailored to your taste.
+        </p>
+      </div>
+    );
+  }
+
+  // STATE E: Real Failure after bounded retries
+  if (status === "error" || recommendations.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-center bg-[#111] rounded-2xl border border-red-500/20 p-8 max-w-lg mx-auto">
         <AlertCircle className="w-12 h-12 text-red-400 mb-4" />
-        <h3 className="text-xl font-bold text-white mb-2">Unable to load recommendations right now</h3>
+        <h3 className="text-xl font-bold text-white mb-2">Unable to load recommendations</h3>
         <p className="text-sm text-gray-400 mb-6">
           {errorMessage || "Please check your connection and try again."}
         </p>
@@ -229,19 +257,6 @@ export default function RecommendationsDashboard() {
         >
           <RefreshCw className="w-4 h-4" /> Try Again
         </button>
-      </div>
-    );
-  }
-
-  // STATE E: Preferences loaded and genuinely empty
-  if (status === "ready-no-preferences" || recommendations.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-gray-500 bg-[#111] rounded-2xl border border-white/5 p-8 text-center">
-        <Sparkles className="w-12 h-12 text-gray-600 mb-4" />
-        <p className="text-xl font-semibold text-gray-300 mb-2">Not enough data</p>
-        <p className="text-sm text-gray-400 max-w-md">
-          Like or add movies and series to your watchlist to get AI-powered recommendations tailored to your taste.
-        </p>
       </div>
     );
   }
@@ -267,3 +282,4 @@ export default function RecommendationsDashboard() {
     </div>
   );
 }
+

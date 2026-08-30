@@ -45,18 +45,60 @@ export interface ResolveMovieLensInput {
   imdb_id?: string | null;
 }
 
-const FASTAPI_URL = (
-  process.env.FASTAPI_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
+const CANDIDATE_BACKEND_URLS = Array.from(
+  new Set(
+    [
+      (process.env.FASTAPI_URL || "").replace(/\/+$/, ""),
+      "http://127.0.0.1:8000",
+      "http://localhost:8000",
+      (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/+$/, ""),
+      "https://flixrec.onrender.com",
+    ].filter(Boolean)
+  )
+);
+
+export async function fetchFromFastApi(
+  path: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  let lastError: any = null;
+  let lastResponse: Response | null = null;
+
+  for (const baseUrl of CANDIDATE_BACKEND_URLS) {
+    try {
+      const url = `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+      const res = await fetch(url, {
+        ...options,
+        signal: options.signal || AbortSignal.timeout(10000),
+        cache: "no-store",
+      });
+
+      if (res.ok) {
+        return res;
+      }
+
+      lastResponse = res;
+      console.warn(`[FastAPI Request] ${url} returned HTTP ${res.status}`);
+      // If 429 (rate limited) or 5xx (cold start/server error), try local/fallback backend
+      if (res.status === 429 || res.status >= 500) {
+        continue;
+      }
+      return res;
+    } catch (err: any) {
+      lastError = err;
+      console.warn(`[FastAPI Request] Failed to reach ${baseUrl}:`, err?.message || err);
+    }
+  }
+
+  if (lastResponse) return lastResponse;
+  throw lastError || new Error("Failed to connect to recommendation backend");
+}
 
 export async function checkBackendHealth(): Promise<{ online: boolean; isColdStart: boolean }> {
   try {
-    const res = await fetch(`${FASTAPI_URL}/health`, {
+    const res = await fetchFromFastApi("/health", {
       method: "GET",
       signal: AbortSignal.timeout(4000),
-      cache: "no-store",
     });
     if (res.ok) {
       return { online: true, isColdStart: false };
@@ -129,8 +171,6 @@ export async function fetchMovieLensId(
       }
     }
 
-    const url = `${FASTAPI_URL}/resolve-external`;
-
     let yearNum: number | undefined;
     if (typeof year === "number") {
       yearNum = year;
@@ -139,7 +179,7 @@ export async function fetchMovieLensId(
       if (yearMatch) yearNum = parseInt(yearMatch[0], 10);
     }
 
-    const res = await fetch(url, {
+    const res = await fetchFromFastApi("/resolve-external", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -150,7 +190,6 @@ export async function fetchMovieLensId(
         imdbId: imdbId ? String(imdbId) : undefined,
       }),
       signal: AbortSignal.timeout(8000),
-      cache: "no-store",
     });
 
     if (!res.ok) return { resolved: false, ml_id: null };
@@ -192,7 +231,7 @@ async function enrichSingleRecommendation(rec: any): Promise<MovieCardProps | nu
       }
     }
 
-    if (!match) {
+    if (!match && rec.title) {
       const { title, year } = parseMovieLensTitle(rec.title);
       const searchRes = await searchMovies(title);
       if (searchRes && searchRes.results && searchRes.results.length > 0) {
@@ -248,10 +287,34 @@ async function enrichSingleRecommendation(rec: any): Promise<MovieCardProps | nu
         source: rec.source || "hybrid",
       };
     }
+
+    // Graceful fallback when Watchmode API is rate limited or item is not on Watchmode
+    const parsed = parseMovieLensTitle(rec.title || "Movie");
+    return {
+      id: rec.movieId || rec.movieLensId || Math.floor(Math.random() * 1000000),
+      watchmodeId: rec.movieId || rec.movieLensId,
+      title: parsed.title || rec.title || "Movie",
+      poster_path: "/placeholder-poster.jpg",
+      poster: "/placeholder-poster.jpg",
+      posterUrl: "/placeholder-poster.jpg",
+      rating: undefined,
+      vote_average: undefined,
+      release_date: parsed.year ? String(parsed.year) : "",
+      type: "movie" as const,
+      score: rec.score,
+      genres: Array.isArray(rec.genres) ? rec.genres.join(", ") : rec.genres || "",
+      tmdbId: rec.tmdbId,
+      imdbId: rec.imdbId,
+      tmdb_id: rec.tmdbId,
+      imdb_id: rec.imdbId,
+      movieLensId: rec.movieLensId || rec.movieId,
+      ml_id: rec.movieLensId || rec.movieId,
+      source: rec.source || "hybrid",
+    };
   } catch (err) {
     console.warn("Failed to enrich recommendation item:", err);
+    return null;
   }
-  return null;
 }
 
 export async function getUnifiedRecommendations(payload: {
@@ -261,6 +324,8 @@ export async function getUnifiedRecommendations(payload: {
   n?: number;
 }): Promise<UnifiedRecommendationResult> {
   try {
+    const targetN = payload.n || 10;
+
     // Dynamic pre-resolution: guarantee that all liked movies have their MovieLens IDs resolved
     const resolvedLikedMedia = await Promise.all(
       (payload.liked_media || []).map(async (item: any) => {
@@ -285,22 +350,40 @@ export async function getUnifiedRecommendations(payload: {
       .map((m) => m.movieLensId ?? m.ml_id)
       .filter((id): id is number => typeof id === "number" && !isNaN(id));
 
+    const disliked_movie_ids = (payload.disliked_media || [])
+      .map((m: any) => m.movieLensId ?? m.ml_id)
+      .filter((id): id is number => typeof id === "number" && !isNaN(id));
+
+    const watched_movie_ids = (payload.watched_media || [])
+      .map((m: any) => m.movieLensId ?? m.ml_id)
+      .filter((id): id is number => typeof id === "number" && !isNaN(id));
+
+    const unresolved_likes = resolvedLikedMedia
+      .filter((m) => !m.movieLensId && !m.ml_id)
+      .map((m) => ({
+        title: m.title,
+        type: m.type || "movie",
+        genres: m.genres,
+      }));
+
     console.log(
       `[RECOMMEND] Dynamic ID Resolution: ${liked_movie_ids.length} MovieLens IDs resolved from ${resolvedLikedMedia.length} total liked items.`
     );
 
-    const res = await fetch(`${FASTAPI_URL}/recommend/unified`, {
+    const res = await fetchFromFastApi("/recommend/unified", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         liked_movie_ids,
+        disliked_movie_ids,
+        watched_movie_ids,
         liked_media: resolvedLikedMedia,
-        disliked_media: payload.disliked_media,
-        watched_media: payload.watched_media,
-        n: payload.n || 10,
+        disliked_media: payload.disliked_media || [],
+        watched_media: payload.watched_media || [],
+        unresolved_likes,
+        n: Math.max(targetN * 2, 20),
       }),
       signal: AbortSignal.timeout(15000), // 15s timeout
-      cache: "no-store",
     });
 
     if (!res.ok) {
@@ -340,9 +423,9 @@ export async function getUnifiedRecommendations(payload: {
       data.recommendations.map((rec: any) => enrichSingleRecommendation(rec))
     );
 
-    const validRecommendations = enrichedList.filter(
-      (item): item is MovieCardProps => item !== null
-    );
+    const validRecommendations = enrichedList
+      .filter((item): item is MovieCardProps => item !== null)
+      .slice(0, targetN);
 
     console.log(`[RECOMMEND] Watchmode enrichment finished: success=${validRecommendations.length}`);
 
@@ -360,3 +443,4 @@ export async function getUnifiedRecommendations(payload: {
     };
   }
 }
+

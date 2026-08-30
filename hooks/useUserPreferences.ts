@@ -3,6 +3,17 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { MovieCardProps } from "@/components/MovieCard";
+import {
+  isMediaInList,
+  toggleMediaItem,
+  removeMediaItem,
+  addMediaItem,
+  mergeMediaLists,
+  getCanonicalMediaKey,
+  isSameMedia,
+  normalizeImdbId,
+  normalizeTmdbId,
+} from "@/lib/mediaIdentity";
 
 export interface UserProfile {
   id: string;
@@ -40,78 +51,48 @@ interface UserPreferencesState {
   togglePossible: (item: MovieCardProps) => Promise<void>;
 }
 
-const getItemKey = (item: MovieCardProps) => {
-  const wid = item.watchmodeId ?? item.id;
-  const t = item.type ?? "movie";
-  return `${wid}_${t}`;
-};
+/**
+ * Fast synchronous media normalization
+ */
+function normalizeMediaItem(item: MovieCardProps): MovieCardProps {
+  const copy: MovieCardProps = { ...item };
 
-const toggleItem = (list: MovieCardProps[], item: MovieCardProps) => {
-  const targetKey = getItemKey(item);
-  const exists = list.some((i) => getItemKey(i) === targetKey);
-  if (exists) {
-    return list.filter((i) => getItemKey(i) !== targetKey);
+  if (!copy.watchmodeId && copy.id) {
+    copy.watchmodeId = copy.id;
   }
-  return [...list, item];
-};
+  if (!copy.id && copy.watchmodeId) {
+    copy.id = typeof copy.watchmodeId === "number" ? copy.watchmodeId : parseInt(String(copy.watchmodeId), 10);
+  }
 
-async function normalizeAndResolveMedia(item: MovieCardProps): Promise<MovieCardProps> {
-  const finalItem: MovieCardProps = { ...item };
-  
-  // Normalize watchmodeId and id
-  if (!finalItem.watchmodeId) {
-    finalItem.watchmodeId = finalItem.id;
-  }
-  if (!finalItem.id && finalItem.watchmodeId) {
-    finalItem.id = typeof finalItem.watchmodeId === "number" ? finalItem.watchmodeId : parseInt(String(finalItem.watchmodeId));
-  }
-  
-  // Normalize IDs
-  const tmdb = finalItem.tmdbId || finalItem.tmdb_id;
-  const imdb = finalItem.imdbId || finalItem.imdb_id;
+  const tmdb = copy.tmdbId || copy.tmdb_id;
+  const imdb = copy.imdbId || copy.imdb_id;
   if (tmdb) {
-    finalItem.tmdbId = tmdb;
-    finalItem.tmdb_id = String(tmdb);
+    const normTmdb = normalizeTmdbId(tmdb);
+    copy.tmdbId = normTmdb;
+    copy.tmdb_id = normTmdb || undefined;
   }
   if (imdb) {
-    finalItem.imdbId = imdb;
-    finalItem.imdb_id = String(imdb);
+    const normImdb = normalizeImdbId(imdb);
+    copy.imdbId = normImdb;
+    copy.imdb_id = normImdb || undefined;
   }
 
-  // Check if resolution is needed
-  if (finalItem.type === "series" || finalItem.type === "tv") {
-    finalItem.movieLensId = null;
-    finalItem.ml_id = undefined;
-    finalItem.resolved = true;
-    finalItem.resolvableByML = false;
-    return finalItem;
-  }
-
-  if (finalItem.movieLensId === undefined && finalItem.ml_id === undefined && !finalItem.resolved) {
-    try {
-      const { fetchMovieLensId } = await import("@/app/actions/recommendations");
-      const { resolved, ml_id, imdbId, tmdbId } = await fetchMovieLensId(finalItem);
-      
-      finalItem.resolved = resolved;
-      finalItem.movieLensId = ml_id || null;
-      finalItem.ml_id = ml_id || undefined;
-      finalItem.resolvableByML = !!ml_id;
-      if (imdbId && !finalItem.imdbId) finalItem.imdbId = imdbId;
-      if (tmdbId && !finalItem.tmdbId) finalItem.tmdbId = tmdbId;
-    } catch (e) {
-      console.warn("Failed to resolve movie lens ID:", e);
-      finalItem.resolved = false;
-      finalItem.movieLensId = null;
-      finalItem.resolvableByML = false;
+  if (copy.type === "series" || copy.type === "tv") {
+    copy.movieLensId = null;
+    copy.ml_id = undefined;
+    copy.resolved = true;
+    copy.resolvableByML = false;
+  } else if (copy.movieLensId || copy.ml_id) {
+    const ml = Number(copy.movieLensId || copy.ml_id);
+    if (!isNaN(ml) && ml > 0) {
+      copy.movieLensId = ml;
+      copy.ml_id = ml;
+      copy.resolved = true;
+      copy.resolvableByML = true;
     }
-  } else if (finalItem.movieLensId || finalItem.ml_id) {
-    finalItem.movieLensId = finalItem.movieLensId || finalItem.ml_id || null;
-    finalItem.ml_id = (finalItem.movieLensId as number) || finalItem.ml_id || undefined;
-    finalItem.resolvableByML = true;
-    finalItem.resolved = true;
   }
 
-  return finalItem;
+  return copy;
 }
 
 export const useUserPreferences = create<UserPreferencesState>()(
@@ -145,7 +126,7 @@ export const useUserPreferences = create<UserPreferencesState>()(
       checkAuth: async () => {
         try {
           set({ authLoading: true });
-          const res = await fetch("/api/auth/me");
+          const res = await fetch("/api/auth/me", { cache: "no-store" });
           let data: any = null;
           try {
             const text = await res.text();
@@ -155,6 +136,51 @@ export const useUserPreferences = create<UserPreferencesState>()(
           }
 
           if (res.ok && data?.user) {
+            const serverLiked = Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [];
+            const serverDisliked = Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [];
+            const serverWatched = Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [];
+            const serverWatchlist = Array.isArray(data.user.watchlist) ? data.user.watchlist : [];
+            const serverPossible = Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [];
+
+            const localState = get();
+            const hasLocalUnsynced =
+              localState.liked.length > 0 ||
+              localState.disliked.length > 0 ||
+              localState.watched.length > 0 ||
+              localState.watchlist.length > 0 ||
+              localState.possible.length > 0;
+
+            let finalLiked = serverLiked;
+            let finalDisliked = serverDisliked;
+            let finalWatched = serverWatched;
+            let finalWatchlist = serverWatchlist;
+            let finalPossible = serverPossible;
+
+            // Merge local guest likes into server profile if any exist
+            if (hasLocalUnsynced) {
+              finalLiked = mergeMediaLists(serverLiked, localState.liked);
+              finalDisliked = mergeMediaLists(serverDisliked, localState.disliked);
+              finalWatched = mergeMediaLists(serverWatched, localState.watched);
+              finalWatchlist = mergeMediaLists(serverWatchlist, localState.watchlist);
+              finalPossible = mergeMediaLists(serverPossible, localState.possible);
+
+              try {
+                await fetch("/api/preferences/sync", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    liked: finalLiked,
+                    disliked: finalDisliked,
+                    watched: finalWatched,
+                    watchlist: finalWatchlist,
+                    possible: finalPossible,
+                  }),
+                });
+              } catch (syncErr) {
+                console.warn("[checkAuth] Non-fatal sync error:", syncErr);
+              }
+            }
+
             set({
               user: {
                 id: data.user.id,
@@ -163,11 +189,11 @@ export const useUserPreferences = create<UserPreferencesState>()(
                 createdAt: data.user.createdAt,
               },
               isAuthenticated: true,
-              liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
-              disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
-              watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
-              watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
-              possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
+              liked: finalLiked,
+              disliked: finalDisliked,
+              watched: finalWatched,
+              watchlist: finalWatchlist,
+              possible: finalPossible,
               preferencesReady: true,
             });
           } else {
@@ -203,6 +229,43 @@ export const useUserPreferences = create<UserPreferencesState>()(
             return { success: false, error: errorMessage };
           }
 
+          const serverLiked = Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [];
+          const serverDisliked = Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [];
+          const serverWatched = Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [];
+          const serverWatchlist = Array.isArray(data.user.watchlist) ? data.user.watchlist : [];
+          const serverPossible = Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [];
+
+          const localState = get();
+          const finalLiked = mergeMediaLists(serverLiked, localState.liked);
+          const finalDisliked = mergeMediaLists(serverDisliked, localState.disliked);
+          const finalWatched = mergeMediaLists(serverWatched, localState.watched);
+          const finalWatchlist = mergeMediaLists(serverWatchlist, localState.watchlist);
+          const finalPossible = mergeMediaLists(serverPossible, localState.possible);
+
+          if (
+            localState.liked.length > 0 ||
+            localState.disliked.length > 0 ||
+            localState.watched.length > 0 ||
+            localState.watchlist.length > 0 ||
+            localState.possible.length > 0
+          ) {
+            try {
+              await fetch("/api/preferences/sync", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  liked: finalLiked,
+                  disliked: finalDisliked,
+                  watched: finalWatched,
+                  watchlist: finalWatchlist,
+                  possible: finalPossible,
+                }),
+              });
+            } catch (syncErr) {
+              console.warn("[login] Non-fatal sync error:", syncErr);
+            }
+          }
+
           set({
             user: {
               id: data.user.id,
@@ -211,11 +274,11 @@ export const useUserPreferences = create<UserPreferencesState>()(
               createdAt: data.user.createdAt,
             },
             isAuthenticated: true,
-            liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
-            disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
-            watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
-            watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
-            possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
+            liked: finalLiked,
+            disliked: finalDisliked,
+            watched: finalWatched,
+            watchlist: finalWatchlist,
+            possible: finalPossible,
             isAuthModalOpen: false,
             preferencesReady: true,
           });
@@ -267,11 +330,11 @@ export const useUserPreferences = create<UserPreferencesState>()(
               createdAt: data.user.createdAt,
             },
             isAuthenticated: true,
-            liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : [],
-            disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : [],
-            watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : [],
-            watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : [],
-            possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : [],
+            liked: Array.isArray(data.user.likedMedia) ? data.user.likedMedia : state.liked,
+            disliked: Array.isArray(data.user.dislikedMedia) ? data.user.dislikedMedia : state.disliked,
+            watched: Array.isArray(data.user.watchedMedia) ? data.user.watchedMedia : state.watched,
+            watchlist: Array.isArray(data.user.watchlist) ? data.user.watchlist : state.watchlist,
+            possible: Array.isArray(data.user.possibleToWatch) ? data.user.possibleToWatch : state.possible,
             isAuthModalOpen: false,
             preferencesReady: true,
           });
@@ -302,134 +365,200 @@ export const useUserPreferences = create<UserPreferencesState>()(
         });
       },
 
-      toggleLike: async (item) => {
-        const finalItem = await normalizeAndResolveMedia(item);
+      toggleLike: async (rawItem: MovieCardProps) => {
+        const item = normalizeMediaItem(rawItem);
         const state = get();
-        const targetKey = getItemKey(finalItem);
-        const isCurrentlyLiked = state.liked.some((i) => getItemKey(i) === targetKey);
-        
-        console.log("LIKE ACTION:", finalItem.title, "| MovieLens ID:", finalItem.movieLensId, "| TMDB:", finalItem.tmdbId, "| IMDb:", finalItem.imdbId);
+        const prevLiked = [...state.liked];
+        const prevDisliked = [...state.disliked];
+        const isCurrentlyLiked = isMediaInList(prevLiked, item);
 
-        // Optimistic UI update
+        // 1. INSTANT SYNCHRONOUS OPTIMISTIC UPDATE
+        const newLiked = isCurrentlyLiked ? removeMediaItem(prevLiked, item) : addMediaItem(prevLiked, item);
+        const newDisliked = removeMediaItem(prevDisliked, item);
+
         set({
-          liked: isCurrentlyLiked 
-            ? state.liked.filter((i) => getItemKey(i) !== targetKey) 
-            : [...state.liked, finalItem],
-          disliked: state.disliked.filter((i) => getItemKey(i) !== targetKey),
+          liked: newLiked,
+          disliked: newDisliked,
           preferencesReady: true,
         });
 
-        // Server sync if authenticated
+        // 2. ASYNC BACKGROUND RESOLUTION (only when adding a movie that lacks MovieLens ID)
+        if (!isCurrentlyLiked) {
+          const isSeries = item.type === "series" || item.type === "tv";
+          if (!isSeries && !item.movieLensId && !item.ml_id) {
+            (async () => {
+              try {
+                const { fetchMovieLensId } = await import("@/app/actions/recommendations");
+                const res = await fetchMovieLensId(item);
+                if (res.resolved && res.ml_id) {
+                  const updatedItem: MovieCardProps = {
+                    ...item,
+                    movieLensId: res.ml_id,
+                    ml_id: res.ml_id,
+                    resolved: true,
+                    resolvableByML: true,
+                    imdbId: res.imdbId || item.imdbId,
+                    tmdbId: res.tmdbId || item.tmdbId,
+                  };
+                  const currentState = get();
+                  if (isMediaInList(currentState.liked, item)) {
+                    set({
+                      liked: currentState.liked.map((i) => (isSameMedia(i, item) ? { ...i, ...updatedItem } : i)),
+                    });
+                  }
+                }
+              } catch (e) {
+                console.warn("[toggleLike] Background MovieLens resolution non-fatal error:", e);
+              }
+            })();
+          }
+        }
+
+        // 3. SERVER SYNC (if authenticated) with rollback on failure
         if (state.isAuthenticated) {
           try {
-            await fetch("/api/preferences/like", {
+            const res = await fetch("/api/preferences/like", {
               method: isCurrentlyLiked ? "DELETE" : "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(finalItem),
+              body: JSON.stringify(item),
             });
+            if (!res.ok) {
+              console.error("[toggleLike] Server sync failed. Rolling back optimistic update.");
+              set({ liked: prevLiked, disliked: prevDisliked });
+            }
           } catch (err) {
-            console.error("Failed to sync like to server:", err);
+            console.error("[toggleLike] Network error syncing like to server:", err);
+            set({ liked: prevLiked, disliked: prevDisliked });
           }
         }
       },
 
-      toggleDislike: async (item) => {
-        const finalItem = await normalizeAndResolveMedia(item);
+      toggleDislike: async (rawItem: MovieCardProps) => {
+        const item = normalizeMediaItem(rawItem);
         const state = get();
-        const targetKey = getItemKey(finalItem);
-        const isCurrentlyDisliked = state.disliked.some((i) => getItemKey(i) === targetKey);
+        const prevDisliked = [...state.disliked];
+        const prevLiked = [...state.liked];
+        const isCurrentlyDisliked = isMediaInList(prevDisliked, item);
 
-        // Optimistic UI update
+        // 1. INSTANT OPTIMISTIC UPDATE
+        const newDisliked = isCurrentlyDisliked
+          ? removeMediaItem(prevDisliked, item)
+          : addMediaItem(prevDisliked, item);
+        const newLiked = removeMediaItem(prevLiked, item);
+
         set({
-          disliked: isCurrentlyDisliked 
-            ? state.disliked.filter((i) => getItemKey(i) !== targetKey) 
-            : [...state.disliked, finalItem],
-          liked: state.liked.filter((i) => getItemKey(i) !== targetKey),
+          disliked: newDisliked,
+          liked: newLiked,
           preferencesReady: true,
         });
 
-        // Server sync if authenticated
+        // 2. SERVER SYNC with rollback
         if (state.isAuthenticated) {
           try {
-            await fetch("/api/preferences/dislike", {
+            const res = await fetch("/api/preferences/dislike", {
               method: isCurrentlyDisliked ? "DELETE" : "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(finalItem),
+              body: JSON.stringify(item),
             });
+            if (!res.ok) {
+              set({ disliked: prevDisliked, liked: prevLiked });
+            }
           } catch (err) {
-            console.error("Failed to sync dislike to server:", err);
+            console.error("[toggleDislike] Failed to sync dislike to server:", err);
+            set({ disliked: prevDisliked, liked: prevLiked });
           }
         }
       },
 
-      toggleWatched: async (item) => {
-        const finalItem = await normalizeAndResolveMedia(item);
+      toggleWatched: async (rawItem: MovieCardProps) => {
+        const item = normalizeMediaItem(rawItem);
         const state = get();
-        const targetKey = getItemKey(finalItem);
-        const isCurrentlyWatched = state.watched.some((i) => getItemKey(i) === targetKey);
+        const prevWatched = [...state.watched];
+        const isCurrentlyWatched = isMediaInList(prevWatched, item);
 
+        // 1. INSTANT OPTIMISTIC UPDATE
+        const newWatched = toggleMediaItem(prevWatched, item);
         set({
-          watched: toggleItem(state.watched, finalItem),
+          watched: newWatched,
           preferencesReady: true,
         });
 
+        // 2. SERVER SYNC with rollback
         if (state.isAuthenticated) {
           try {
-            await fetch("/api/preferences/watched", {
+            const res = await fetch("/api/preferences/watched", {
               method: isCurrentlyWatched ? "DELETE" : "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(finalItem),
+              body: JSON.stringify(item),
             });
+            if (!res.ok) {
+              set({ watched: prevWatched });
+            }
           } catch (err) {
-            console.error("Failed to sync watched to server:", err);
+            console.error("[toggleWatched] Failed to sync watched to server:", err);
+            set({ watched: prevWatched });
           }
         }
       },
 
-      toggleWatchlist: async (item) => {
-        const finalItem = await normalizeAndResolveMedia(item);
+      toggleWatchlist: async (rawItem: MovieCardProps) => {
+        const item = normalizeMediaItem(rawItem);
         const state = get();
-        const targetKey = getItemKey(finalItem);
-        const isCurrentlyInWatchlist = state.watchlist.some((i) => getItemKey(i) === targetKey);
+        const prevWatchlist = [...state.watchlist];
+        const isCurrentlyInWatchlist = isMediaInList(prevWatchlist, item);
 
+        // 1. INSTANT OPTIMISTIC UPDATE
+        const newWatchlist = toggleMediaItem(prevWatchlist, item);
         set({
-          watchlist: toggleItem(state.watchlist, finalItem),
+          watchlist: newWatchlist,
           preferencesReady: true,
         });
 
+        // 2. SERVER SYNC with rollback
         if (state.isAuthenticated) {
           try {
-            await fetch("/api/preferences/watchlist", {
+            const res = await fetch("/api/preferences/watchlist", {
               method: isCurrentlyInWatchlist ? "DELETE" : "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(finalItem),
+              body: JSON.stringify(item),
             });
+            if (!res.ok) {
+              set({ watchlist: prevWatchlist });
+            }
           } catch (err) {
-            console.error("Failed to sync watchlist to server:", err);
+            console.error("[toggleWatchlist] Failed to sync watchlist to server:", err);
+            set({ watchlist: prevWatchlist });
           }
         }
       },
 
-      togglePossible: async (item) => {
-        const finalItem = await normalizeAndResolveMedia(item);
+      togglePossible: async (rawItem: MovieCardProps) => {
+        const item = normalizeMediaItem(rawItem);
         const state = get();
-        const targetKey = getItemKey(finalItem);
-        const isCurrentlyPossible = state.possible.some((i) => getItemKey(i) === targetKey);
+        const prevPossible = [...state.possible];
+        const isCurrentlyPossible = isMediaInList(prevPossible, item);
 
+        // 1. INSTANT OPTIMISTIC UPDATE
+        const newPossible = toggleMediaItem(prevPossible, item);
         set({
-          possible: toggleItem(state.possible, finalItem),
+          possible: newPossible,
           preferencesReady: true,
         });
 
+        // 2. SERVER SYNC with rollback
         if (state.isAuthenticated) {
           try {
-            await fetch("/api/preferences/possible", {
+            const res = await fetch("/api/preferences/possible", {
               method: isCurrentlyPossible ? "DELETE" : "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(finalItem),
+              body: JSON.stringify(item),
             });
+            if (!res.ok) {
+              set({ possible: prevPossible });
+            }
           } catch (err) {
-            console.error("Failed to sync possible to server:", err);
+            console.error("[togglePossible] Failed to sync possible to server:", err);
+            set({ possible: prevPossible });
           }
         }
       },
@@ -451,3 +580,4 @@ export const useUserPreferences = create<UserPreferencesState>()(
     }
   )
 );
+

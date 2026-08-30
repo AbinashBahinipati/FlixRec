@@ -1,25 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { getUsersCollection } from "@/lib/mongodb";
-import { getMediaKey } from "@/lib/models/user";
+import { mergeMediaLists } from "@/lib/mediaIdentity";
 import { MediaItem } from "@/components/MovieCard";
 
-function mergeMediaLists(existing: MediaItem[] = [], incoming: MediaItem[] = []): MediaItem[] {
-  const map = new Map<string, MediaItem>();
-  for (const item of existing) {
-    map.set(getMediaKey(item), item);
-  }
-  for (const item of incoming) {
-    const key = getMediaKey(item);
-    if (!map.has(key)) {
-      map.set(key, item);
-    } else {
-      // Merge properties if newer has more metadata
-      map.set(key, { ...map.get(key), ...item });
-    }
-  }
-  return Array.from(map.values());
-}
 
 export async function POST(req: NextRequest) {
   try {

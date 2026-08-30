@@ -1,5 +1,12 @@
 import { ObjectId } from "mongodb";
 import { MediaItem } from "@/components/MovieCard";
+import {
+  getCanonicalMediaKey,
+  isSameMedia,
+  addMediaItem,
+  removeMediaItem,
+  mergeMediaLists
+} from "@/lib/mediaIdentity";
 
 export interface UserDocument {
   _id?: ObjectId;
@@ -27,20 +34,15 @@ export interface UserProfileResponse {
   createdAt: string;
 }
 
-export const getMediaKey = (item: MediaItem): string => {
-  const wid = item.watchmodeId ?? item.id;
-  const t = item.type ?? "movie";
-  return `${wid}_${t}`;
-};
+export const getMediaKey = getCanonicalMediaKey;
 
 /**
  * Deduplicate or toggle media item in an array while preserving all metadata
  */
 export const updateMediaList = (list: MediaItem[] = [], item: MediaItem, shouldAdd: boolean): MediaItem[] => {
-  const targetKey = getMediaKey(item);
-  const filtered = list.filter((i) => getMediaKey(i) !== targetKey);
   if (shouldAdd) {
-    return [...filtered, item];
+    return addMediaItem(list, item);
   }
-  return filtered;
+  return removeMediaItem(list, item);
 };
+

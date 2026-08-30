@@ -3,6 +3,7 @@
 import { Heart, Plus, ThumbsDown, CheckCircle, Loader2 } from "lucide-react";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
 import { MovieCardProps } from "@/components/MovieCard";
+import { isMediaInList } from "@/lib/mediaIdentity";
 import { useState } from "react";
 
 export default function ActionButtons({ item }: { item: MovieCardProps }) {
@@ -12,11 +13,11 @@ export default function ActionButtons({ item }: { item: MovieCardProps }) {
     toggleLike, toggleDislike, toggleWatched, toggleWatchlist 
   } = useUserPreferences();
 
-  const currentId = item.watchmodeId ?? item.id;
-  const isLiked = liked.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isDisliked = disliked.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isWatched = watched.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isInWatchlist = watchlist.some((i) => (i.watchmodeId ?? i.id) == currentId);
+  const isLiked = isMediaInList(liked, item);
+  const isDisliked = isMediaInList(disliked, item);
+  const isWatched = isMediaInList(watched, item);
+  const isInWatchlist = isMediaInList(watchlist, item);
+
 
   const handleAction = async (action: (item: MovieCardProps) => void | Promise<void>) => {
     if (isProcessing) return;

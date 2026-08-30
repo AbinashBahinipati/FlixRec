@@ -67,6 +67,7 @@ else:
 
 
 # ============================================================
+# ============================================================
 # REQUEST MODELS
 # ============================================================
 
@@ -79,25 +80,29 @@ class RecommendationRequest(BaseModel):
 
 
 class ResolveExternalRequest(BaseModel):
-    imdbId: Optional[str] = None
-    tmdbId: Optional[str] = None
+    imdbId: Optional[Any] = None
+    tmdbId: Optional[Any] = None
     title: Optional[str] = None
-    year: Optional[int] = None
+    year: Optional[Any] = None
     type: Optional[str] = "movie"
 
 
 class ResolveMovieRequest(BaseModel):
     title: Optional[str] = None
-    year: Optional[int] = None
+    year: Optional[Any] = None
     type: Optional[str] = "movie"
-    tmdbId: Optional[str] = None
-    imdbId: Optional[str] = None
+    tmdbId: Optional[Any] = None
+    imdbId: Optional[Any] = None
 
 
 class UnifiedRecommendationRequest(BaseModel):
     liked_media: List[dict] = []
     disliked_media: List[dict] = []
     watched_media: List[dict] = []
+    liked_movie_ids: List[int] = []
+    disliked_movie_ids: List[int] = []
+    watched_movie_ids: List[int] = []
+    unresolved_likes: list = []
     n: int = 10
 
 
@@ -123,7 +128,7 @@ class MovieRecommendationModel(nn.Module):
 
 
 # ============================================================
-# TITLE CLEANING UTILITY
+# TITLE CLEANING & GENRE NORMALIZATION UTILITIES
 # ============================================================
 
 def clean_movie_title(t: str) -> str:
@@ -135,6 +140,89 @@ def clean_movie_title(t: str) -> str:
         t = f"{match.group(2)} {match.group(1)}"
     t = re.sub(r'[^\w\s]', '', t)
     return " ".join(t.lower().split())
+
+
+WATCHMODE_TO_MOVIELENS_GENRES = {
+    "action": ["Action"],
+    "action & adventure": ["Action", "Adventure"],
+    "adventure": ["Adventure"],
+    "animation": ["Animation"],
+    "anime": ["Animation"],
+    "biography": ["Documentary", "Drama"],
+    "children": ["Children"],
+    "children & family": ["Children"],
+    "comedy": ["Comedy"],
+    "romantic comedy": ["Romance", "Comedy"],
+    "crime": ["Crime"],
+    "documentary": ["Documentary"],
+    "docuseries": ["Documentary"],
+    "drama": ["Drama"],
+    "family": ["Children"],
+    "fantasy": ["Fantasy"],
+    "film-noir": ["Film-Noir"],
+    "history": ["Documentary", "Drama"],
+    "horror": ["Horror"],
+    "kids": ["Children"],
+    "music": ["Musical"],
+    "musical": ["Musical"],
+    "mystery": ["Mystery"],
+    "news": ["Documentary"],
+    "reality": ["Documentary"],
+    "romance": ["Romance"],
+    "romantic": ["Romance"],
+    "sci-fi": ["Sci-Fi"],
+    "sci-fi & fantasy": ["Sci-Fi", "Fantasy"],
+    "science fiction": ["Sci-Fi"],
+    "scifi": ["Sci-Fi"],
+    "short": ["Documentary"],
+    "soap": ["Drama"],
+    "sports": ["Drama"],
+    "suspense": ["Thriller"],
+    "talk": ["Comedy"],
+    "thriller": ["Thriller"],
+    "war": ["War"],
+    "war & politics": ["War", "Drama"],
+    "western": ["Western"],
+}
+
+
+def normalize_genres_to_movielens(raw_genres) -> List[str]:
+    """Normalizes raw genre inputs (from Watchmode, strings, lists) to standard MovieLens genre names."""
+    if not raw_genres:
+        return []
+
+    tokens = []
+    if isinstance(raw_genres, list):
+        for item in raw_genres:
+            if item:
+                tokens.extend([x.strip() for x in str(item).replace("|", ",").split(",") if x.strip()])
+    elif isinstance(raw_genres, str):
+        tokens.extend([x.strip() for x in raw_genres.replace("|", ",").split(",") if x.strip()])
+
+    result_set = set()
+    for token in tokens:
+        lower_token = token.lower().strip()
+        if lower_token in WATCHMODE_TO_MOVIELENS_GENRES:
+            result_set.update(WATCHMODE_TO_MOVIELENS_GENRES[lower_token])
+        else:
+            capitalized = lower_token.capitalize()
+            if capitalized in [
+                "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
+                "Documentary", "Drama", "Fantasy", "Film-noir", "Horror", "Musical",
+                "Mystery", "Romance", "Sci-fi", "Thriller", "War", "Western"
+            ]:
+                if capitalized == "Film-noir":
+                    result_set.add("Film-Noir")
+                elif capitalized == "Sci-fi":
+                    result_set.add("Sci-Fi")
+                else:
+                    result_set.add(capitalized)
+            else:
+                for key, mapped_list in WATCHMODE_TO_MOVIELENS_GENRES.items():
+                    if key in lower_token:
+                        result_set.update(mapped_list)
+
+    return sorted(list(result_set))
 
 
 # ============================================================
@@ -164,12 +252,25 @@ def get_recommendation_resources() -> Dict[str, Any]:
         movies_df = pd.read_csv(MOVIES_PATH)
         movies_df["movieId"] = movies_df["movieId"].astype(int)
         movies_df["normalized_title"] = movies_df["title"].apply(clean_movie_title)
+        movies_df["year"] = movies_df["title"].str.extract(r'\((\d{4})\)')[0]
         movie_lookup = movies_df.set_index("movieId")
 
-        # 2. Build genre map
+        # 2. Build title dictionaries for fast resolution
+        title_to_movielens = {}
+        title_year_to_movielens = {}
         movie_genres = {}
+
         for _, row in movies_df.iterrows():
             mid = int(row["movieId"])
+            norm_title = str(row["normalized_title"])
+            yr = str(row["year"]) if pd.notna(row["year"]) else ""
+
+            if norm_title:
+                if norm_title not in title_to_movielens:
+                    title_to_movielens[norm_title] = mid
+                if yr:
+                    title_year_to_movielens[f"{norm_title}_{yr}"] = mid
+
             g_str = str(row.get("genres", ""))
             if pd.isna(g_str) or g_str == "(no genres listed)" or not g_str:
                 movie_genres[mid] = set()
@@ -192,25 +293,27 @@ def get_recommendation_resources() -> Dict[str, Any]:
 
                 imdb_raw = str(row["imdbId"]).strip() if pd.notna(row.get("imdbId")) else None
                 if imdb_raw and imdb_raw != "nan" and imdb_raw != "":
-                    imdbToMovieLens[imdb_raw] = mid
-                    imdbToMovieLens["tt" + imdb_raw] = mid
-                    padded = imdb_raw.zfill(7)
-                    imdbToMovieLens[padded] = mid
-                    imdbToMovieLens["tt" + padded] = mid
-                    if imdb_raw.isdigit():
-                        stripped = str(int(imdb_raw))
+                    digits = re.sub(r'\D', '', imdb_raw)
+                    if digits:
+                        padded = digits.zfill(7)
+                        imdbToMovieLens[digits] = mid
+                        imdbToMovieLens["tt" + digits] = mid
+                        imdbToMovieLens[padded] = mid
+                        imdbToMovieLens["tt" + padded] = mid
+                        stripped = str(int(digits))
                         imdbToMovieLens[stripped] = mid
                         imdbToMovieLens["tt" + stripped] = mid
-                    movieLensToImdb[mid] = "tt" + padded
+                        movieLensToImdb[mid] = "tt" + padded
 
                 tmdb_raw = str(row["tmdbId"]).strip() if pd.notna(row.get("tmdbId")) else None
                 if tmdb_raw and tmdb_raw != "nan" and tmdb_raw != "":
                     if tmdb_raw.endswith(".0"):
                         tmdb_raw = tmdb_raw[:-2]
-                    tmdbToMovieLens[tmdb_raw] = mid
-                    if tmdb_raw.isdigit():
-                        tmdbToMovieLens[str(int(tmdb_raw))] = mid
-                    movieLensToTmdb[mid] = tmdb_raw
+                    digits = re.sub(r'\D', '', tmdb_raw)
+                    if digits:
+                        tmdbToMovieLens[digits] = mid
+                        tmdbToMovieLens[str(int(digits))] = mid
+                        movieLensToTmdb[mid] = str(int(digits))
 
         # 4. Load mappings
         if not os.path.exists(MOVIE_MAP_PATH):
@@ -265,6 +368,8 @@ def get_recommendation_resources() -> Dict[str, Any]:
             "movies_df": movies_df,
             "movie_lookup": movie_lookup,
             "movie_genres": movie_genres,
+            "title_to_movielens": title_to_movielens,
+            "title_year_to_movielens": title_year_to_movielens,
             "imdbToMovieLens": imdbToMovieLens,
             "tmdbToMovieLens": tmdbToMovieLens,
             "movieLensToImdb": movieLensToImdb,
@@ -380,7 +485,7 @@ def recommend_movies(
     if res is None:
         res = get_recommendation_resources()
 
-    n = max(1, min(int(n), 50))
+    n = max(1, min(int(n), 100))
     liked_movie_ids = list(dict.fromkeys(liked_movie_ids))
     disliked_movie_ids = list(dict.fromkeys(disliked_movie_ids))
     watched_movie_ids = list(dict.fromkeys(watched_movie_ids))
@@ -479,21 +584,21 @@ def recommend_movies(
 # ============================================================
 
 def resolve_external_to_movielens(
-    imdb_id: Optional[str] = None,
-    tmdb_id: Optional[str] = None,
+    imdb_id: Optional[Any] = None,
+    tmdb_id: Optional[Any] = None,
     title: Optional[str] = None,
-    year: Optional[int] = None,
+    year: Optional[Any] = None,
     media_type: Optional[str] = "movie",
     res: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     if media_type in ["series", "tv", "tv_series"]:
         return {
-            "resolved": False,
+            "resolved": True,
             "found": False,
             "movieLensId": None,
             "imdbId": str(imdb_id) if imdb_id else None,
             "tmdbId": str(tmdb_id) if tmdb_id else None,
-            "reason": "TV/Web series are not indexed in the MovieLens dataset"
+            "reason": "TV/Web series participate via content-based similarity"
         }
 
     if res is None:
@@ -503,115 +608,100 @@ def resolve_external_to_movielens(
     tmdbToMovieLens = res["tmdbToMovieLens"]
     movieLensToImdb = res["movieLensToImdb"]
     movieLensToTmdb = res["movieLensToTmdb"]
-    movies_df = res["movies_df"]
+    title_to_movielens = res["title_to_movielens"]
+    title_year_to_movielens = res["title_year_to_movielens"]
 
-    imdb_found = False
-    tmdb_found = False
-    title_fallback_used = False
-
-    # 1. Try IMDb ID
+    # 1. Try IMDb ID with multiple normalizations
     if imdb_id:
-        clean_imdb = str(imdb_id).strip().lower()
-        if clean_imdb in imdbToMovieLens:
-            mid = int(imdbToMovieLens[clean_imdb])
-            imdb_found = True
-            return {
-                "resolved": True,
-                "found": True,
-                "movieLensId": mid,
-                "imdbId": movieLensToImdb.get(mid),
-                "tmdbId": movieLensToTmdb.get(mid),
-                "title": get_movie_title(mid, res),
-                "debug": {
-                    "receivedImdbId": str(imdb_id) if imdb_id else None,
-                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
-                    "imdbLookup": True,
-                    "tmdbLookup": False,
-                    "titleYearFallback": False
-                }
-            }
-
-    # 2. Try TMDB ID
-    if tmdb_id:
-        clean_tmdb = str(tmdb_id).strip()
-        if clean_tmdb.endswith(".0"):
-            clean_tmdb = clean_tmdb[:-2]
-        if clean_tmdb in tmdbToMovieLens:
-            mid = int(tmdbToMovieLens[clean_tmdb])
-            tmdb_found = True
-            return {
-                "resolved": True,
-                "found": True,
-                "movieLensId": mid,
-                "imdbId": movieLensToImdb.get(mid),
-                "tmdbId": movieLensToTmdb.get(mid),
-                "title": get_movie_title(mid, res),
-                "debug": {
-                    "receivedImdbId": str(imdb_id) if imdb_id else None,
-                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
-                    "imdbLookup": False,
-                    "tmdbLookup": True,
-                    "titleYearFallback": False
-                }
-            }
-
-    # 3. Fallback to Title + Year
-    if title:
-        norm_title = clean_movie_title(title)
-        matches = movies_df[movies_df["normalized_title"] == norm_title]
-        if not matches.empty:
-            title_fallback_used = True
-            if year:
-                year_str = str(year)[:4]
-                year_matches = matches[matches["title"].str.contains(f"\\({year_str}\\)")]
-                if not year_matches.empty:
-                    mid = int(year_matches.iloc[0]["movieId"])
+        imdb_str = str(imdb_id).strip().lower()
+        digits = re.sub(r'\D', '', imdb_str)
+        if digits:
+            variants = [
+                imdb_str,
+                f"tt{digits}",
+                f"tt{digits.zfill(7)}",
+                digits,
+                digits.zfill(7),
+                str(int(digits)),
+                f"tt{str(int(digits))}"
+            ]
+            for var in variants:
+                if var in imdbToMovieLens:
+                    mid = int(imdbToMovieLens[var])
                     return {
                         "resolved": True,
                         "found": True,
                         "movieLensId": mid,
                         "imdbId": movieLensToImdb.get(mid),
                         "tmdbId": movieLensToTmdb.get(mid),
-                        "title": year_matches.iloc[0]["title"],
-                        "debug": {
-                            "receivedImdbId": str(imdb_id) if imdb_id else None,
-                            "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
-                            "imdbLookup": False,
-                            "tmdbLookup": False,
-                            "titleYearFallback": True
-                        }
+                        "title": get_movie_title(mid, res),
+                        "debug": {"matchedBy": "imdbId", "variant": var}
                     }
-            mid = int(matches.iloc[0]["movieId"])
+
+    # 2. Try TMDB ID
+    if tmdb_id:
+        tmdb_str = str(tmdb_id).strip()
+        if tmdb_str.endswith(".0"):
+            tmdb_str = tmdb_str[:-2]
+        digits = re.sub(r'\D', '', tmdb_str)
+        if digits:
+            variants = [tmdb_str, digits, str(int(digits))]
+            for var in variants:
+                if var in tmdbToMovieLens:
+                    mid = int(tmdbToMovieLens[var])
+                    return {
+                        "resolved": True,
+                        "found": True,
+                        "movieLensId": mid,
+                        "imdbId": movieLensToImdb.get(mid),
+                        "tmdbId": movieLensToTmdb.get(mid),
+                        "title": get_movie_title(mid, res),
+                        "debug": {"matchedBy": "tmdbId", "variant": var}
+                    }
+
+    # 3. Try Normalized Title + Year
+    if title:
+        norm_title = clean_movie_title(title)
+        year_str = ""
+        if year:
+            ym = re.search(r'\d{4}', str(year))
+            if ym:
+                year_str = ym.group(0)
+
+        if year_str:
+            ty_key = f"{norm_title}_{year_str}"
+            if ty_key in title_year_to_movielens:
+                mid = int(title_year_to_movielens[ty_key])
+                return {
+                    "resolved": True,
+                    "found": True,
+                    "movieLensId": mid,
+                    "imdbId": movieLensToImdb.get(mid),
+                    "tmdbId": movieLensToTmdb.get(mid),
+                    "title": get_movie_title(mid, res),
+                    "debug": {"matchedBy": "title_year", "key": ty_key}
+                }
+
+        if norm_title in title_to_movielens:
+            mid = int(title_to_movielens[norm_title])
             return {
                 "resolved": True,
                 "found": True,
                 "movieLensId": mid,
                 "imdbId": movieLensToImdb.get(mid),
                 "tmdbId": movieLensToTmdb.get(mid),
-                "title": matches.iloc[0]["title"],
-                "debug": {
-                    "receivedImdbId": str(imdb_id) if imdb_id else None,
-                    "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
-                    "imdbLookup": False,
-                    "tmdbLookup": False,
-                    "titleYearFallback": True
-                }
+                "title": get_movie_title(mid, res),
+                "debug": {"matchedBy": "title_only", "key": norm_title}
             }
 
     return {
-        "resolved": False,
+        "resolved": True,
         "found": False,
         "movieLensId": None,
         "imdbId": str(imdb_id) if imdb_id else None,
         "tmdbId": str(tmdb_id) if tmdb_id else None,
-        "reason": "No MovieLens mapping found",
-        "debug": {
-            "receivedImdbId": str(imdb_id) if imdb_id else None,
-            "receivedTmdbId": str(tmdb_id) if tmdb_id else None,
-            "imdbLookup": False,
-            "tmdbLookup": False,
-            "titleYearFallback": False
-        }
+        "reason": "No MovieLens mapping found; participates via content-based similarity",
+        "debug": {"searchedTitle": title, "searchedYear": year}
     }
 
 
@@ -735,45 +825,88 @@ def recommend_unified(req: UnifiedRecommendationRequest):
         movies_df = res["movies_df"]
         movieLensToImdb = res["movieLensToImdb"]
         movieLensToTmdb = res["movieLensToTmdb"]
+        movie_genres = res["movie_genres"]
 
-        liked_ml_ids = []
-        disliked_ml_ids = []
-        watched_ml_ids = []
+        liked_ml_ids = list(req.liked_movie_ids or [])
+        disliked_ml_ids = list(req.disliked_movie_ids or [])
+        watched_ml_ids = list(req.watched_movie_ids or [])
+
         all_liked_genres = []
+        excluded_titles = set()
+        excluded_imdbs = set()
+        excluded_tmdbs = set()
 
+        # 1. Process liked media (extract MovieLens IDs and normalized genres)
         for item in req.liked_media:
             ml_id = item.get("movieLensId") or item.get("ml_id")
-            if ml_id and isinstance(ml_id, (int, float)):
+            if ml_id and isinstance(ml_id, (int, float)) and int(ml_id) > 0:
                 liked_ml_ids.append(int(ml_id))
-            g = item.get("genres")
-            if isinstance(g, list):
-                all_liked_genres.extend([str(x).strip() for x in g if x])
-            elif isinstance(g, str):
-                all_liked_genres.extend([x.strip() for x in g.replace("|", ",").split(",") if x.strip()])
+            elif item.get("type") not in ["series", "tv", "tv_series"]:
+                # Fast on-the-fly resolution for unresolved movies
+                res_match = resolve_external_to_movielens(
+                    imdb_id=item.get("imdbId") or item.get("imdb_id"),
+                    tmdb_id=item.get("tmdbId") or item.get("tmdb_id"),
+                    title=item.get("title"),
+                    year=item.get("year"),
+                    media_type="movie",
+                    res=res
+                )
+                if res_match.get("found") and res_match.get("movieLensId"):
+                    liked_ml_ids.append(int(res_match["movieLensId"]))
 
+            # Extract normalized genres
+            norm_g = normalize_genres_to_movielens(item.get("genres"))
+            all_liked_genres.extend(norm_g)
+
+            if item.get("title"):
+                excluded_titles.add(clean_movie_title(item.get("title")))
+            if item.get("imdbId") or item.get("imdb_id"):
+                imdb_val = item.get("imdbId") or item.get("imdb_id")
+                digits = re.sub(r'\D', '', str(imdb_val))
+                if digits:
+                    excluded_imdbs.add(f"tt{digits.zfill(7)}")
+            if item.get("tmdbId") or item.get("tmdb_id"):
+                tmdb_val = item.get("tmdbId") or item.get("tmdb_id")
+                digits = re.sub(r'\D', '', str(tmdb_val))
+                if digits:
+                    excluded_tmdbs.add(str(int(digits)))
+
+        # Also add genres from liked MovieLens IDs
+        for mid in liked_ml_ids:
+            all_liked_genres.extend(list(movie_genres.get(mid, set())))
+
+        # 2. Process disliked media
         for item in req.disliked_media:
             ml_id = item.get("movieLensId") or item.get("ml_id")
-            if ml_id and isinstance(ml_id, (int, float)):
+            if ml_id and isinstance(ml_id, (int, float)) and int(ml_id) > 0:
                 disliked_ml_ids.append(int(ml_id))
+            if item.get("title"):
+                excluded_titles.add(clean_movie_title(item.get("title")))
 
+        # 3. Process watched media
         for item in req.watched_media:
             ml_id = item.get("movieLensId") or item.get("ml_id")
-            if ml_id and isinstance(ml_id, (int, float)):
+            if ml_id and isinstance(ml_id, (int, float)) and int(ml_id) > 0:
                 watched_ml_ids.append(int(ml_id))
+            if item.get("title"):
+                excluded_titles.add(clean_movie_title(item.get("title")))
 
-        logger.info(
-            f"[RECOMMEND] preference counts: liked={len(req.liked_media)} (ML={len(liked_ml_ids)}), "
-            f"disliked={len(req.disliked_media)}, watched={len(req.watched_media)}"
-        )
-
+        liked_ml_ids = list(dict.fromkeys(liked_ml_ids))
+        disliked_ml_ids = list(dict.fromkeys(disliked_ml_ids))
+        watched_ml_ids = list(dict.fromkeys(watched_ml_ids))
         excluded_ids = set(liked_ml_ids + disliked_ml_ids + watched_ml_ids)
         liked_genre_set = set(all_liked_genres)
+
+        logger.info(
+            f"[RECOMMEND] preference counts: liked={len(req.liked_media)} (ML={len(liked_ml_ids)}, Genres={liked_genre_set}), "
+            f"disliked={len(req.disliked_media)}, watched={len(req.watched_media)}"
+        )
 
         candidate_map = {}
         ml_candidates_count = 0
         content_candidates_count = 0
 
-        # 1. Collaborative ML candidates if valid ML IDs exist
+        # Step A: Collaborative ML candidates if valid MovieLens IDs exist
         if liked_ml_ids:
             ml_recs = recommend_movies(
                 liked_movie_ids=liked_ml_ids,
@@ -787,6 +920,7 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                 mid = rec["movieId"]
                 if mid in excluded_ids:
                     continue
+
                 rec_genres = set(rec["genres"]) if isinstance(rec["genres"], list) else set(str(rec["genres"]).split("|"))
                 overlap = len(rec_genres.intersection(liked_genre_set)) if liked_genre_set else 0
                 content_score = min(1.0, overlap / max(1, len(rec_genres))) if rec_genres else 0.5
@@ -806,34 +940,42 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                     "tmdbId": rec.get("tmdbId") or movieLensToTmdb.get(mid)
                 }
 
-        # 2. Content-based candidates matching liked genres (for series / non-MovieLens items)
+        # Step B: Content-based candidate ranking across full dataset (for TV series, unmapped movies, and genre expansion)
         if liked_genre_set:
-            genre_pattern = "|".join([re.escape(g) for g in liked_genre_set if g])
-            if genre_pattern:
-                matching_movies = movies_df[movies_df["genres"].str.contains(genre_pattern, case=False, na=False)]
-                scored_content = []
-                for _, row in matching_movies.iterrows():
-                    mid = int(row["movieId"])
-                    if mid in excluded_ids or mid in candidate_map:
-                        continue
-                    rec_genres = set(str(row["genres"]).split("|"))
-                    overlap = len(rec_genres.intersection(liked_genre_set))
-                    if overlap == 0:
-                        continue
-                    union_len = len(rec_genres.union(liked_genre_set))
-                    content_score = round(overlap / max(1, union_len), 4)
-                    scored_content.append((content_score, mid, row))
-                    if len(scored_content) >= 300:
-                        break
+            scored_content = []
+            for _, row in movies_df.iterrows():
+                mid = int(row["movieId"])
+                if mid in excluded_ids:
+                    continue
 
-                scored_content.sort(key=lambda x: x[0], reverse=True)
-                content_candidates_count = len(scored_content[:30])
-                for content_score, mid, row in scored_content[:30]:
+                g_set = movie_genres.get(mid, set())
+                if not g_set:
+                    continue
+
+                overlap = len(g_set.intersection(liked_genre_set))
+                if overlap == 0:
+                    continue
+
+                union_len = len(g_set.union(liked_genre_set))
+                jaccard = overlap / max(1, union_len)
+
+                # Prioritize movies with richer overlap and higher base score
+                score = round(0.70 * jaccard + 0.30 * min(1.0, overlap / max(1, len(g_set))), 4)
+                scored_content.append((score, mid, row))
+
+            scored_content.sort(key=lambda x: x[0], reverse=True)
+            content_candidates_count = len(scored_content[:60])
+
+            for content_score, mid, row in scored_content[:60]:
+                if mid in candidate_map:
+                    # Boost existing collaborative candidate if it also has high genre overlap
+                    candidate_map[mid]["score"] = round(candidate_map[mid]["score"] * 0.7 + content_score * 0.3, 4)
+                else:
                     candidate_map[mid] = {
                         "movieId": mid,
                         "movieLensId": mid,
                         "title": row["title"],
-                        "genres": row["genres"],
+                        "genres": list(movie_genres.get(mid, set())),
                         "score": round(0.85 * content_score, 4),
                         "source": "content",
                         "imdbId": movieLensToImdb.get(mid),
@@ -846,13 +988,13 @@ def recommend_unified(req: UnifiedRecommendationRequest):
             f"merged candidate count: {len(candidate_map)}"
         )
 
-        # Fallback to standard recommend_movies if candidate_map is empty
+        # Step C: Fallback to popular recommendations if candidate_map is still empty
         if not candidate_map:
             ml_recs = recommend_movies(
                 liked_movie_ids=liked_ml_ids,
                 disliked_movie_ids=disliked_ml_ids,
                 watched_movie_ids=watched_ml_ids,
-                n=req.n,
+                n=max(req.n * 2, 20),
                 res=res
             )
             for rec in ml_recs:
@@ -868,7 +1010,21 @@ def recommend_unified(req: UnifiedRecommendationRequest):
                     "tmdbId": rec.get("tmdbId") or movieLensToTmdb.get(mid)
                 }
 
-        recommendations = sorted(candidate_map.values(), key=lambda x: x["score"], reverse=True)[:req.n]
+        # Step D: Final filtering of excluded titles/IDs and sorting
+        filtered_candidates = []
+        for mid, rec in candidate_map.items():
+            if mid in excluded_ids:
+                continue
+            t_clean = clean_movie_title(rec.get("title", ""))
+            if t_clean in excluded_titles:
+                continue
+            if rec.get("imdbId") and rec.get("imdbId") in excluded_imdbs:
+                continue
+            if rec.get("tmdbId") and str(rec.get("tmdbId")) in excluded_tmdbs:
+                continue
+            filtered_candidates.append(rec)
+
+        recommendations = sorted(filtered_candidates, key=lambda x: x["score"], reverse=True)[:max(req.n, 20)]
         logger.info(f"[RECOMMEND] response generated: count={len(recommendations)}")
 
         return {
@@ -884,6 +1040,7 @@ def recommend_unified(req: UnifiedRecommendationRequest):
             "recommendations": [],
             "error": str(e)
         }
+
 
 
 # ============================================================

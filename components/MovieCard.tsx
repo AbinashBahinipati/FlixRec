@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Heart, Plus, ThumbsDown, CheckCircle } from "lucide-react";
 import { useState } from "react";
 import { useUserPreferences } from "@/hooks/useUserPreferences";
+import { isMediaInList } from "@/lib/mediaIdentity";
 
 export interface MediaItem {
   id: number;
@@ -43,11 +44,11 @@ export default function MovieCard(props: MovieCardProps) {
   
   const { liked, disliked, watched, watchlist, toggleLike, toggleDislike, toggleWatched, toggleWatchlist } = useUserPreferences();
 
-  const currentId = props.watchmodeId ?? id;
-  const isLiked = liked.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isDisliked = disliked.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isWatched = watched.some((i) => (i.watchmodeId ?? i.id) == currentId);
-  const isInWatchlist = watchlist.some((i) => (i.watchmodeId ?? i.id) == currentId);
+  const isLiked = isMediaInList(liked, props);
+  const isDisliked = isMediaInList(disliked, props);
+  const isWatched = isMediaInList(watched, props);
+  const isInWatchlist = isMediaInList(watchlist, props);
+
 
   // Separate Public Watchmode Rating from internal AI recommendation score
   const rawRating = typeof props.rating === "number" ? props.rating : typeof props.vote_average === "number" ? props.vote_average : null;
